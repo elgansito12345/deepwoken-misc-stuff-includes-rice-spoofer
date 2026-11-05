@@ -67,20 +67,49 @@ end
 
 logStep("2 services ok")
 local FONT = nil
-pcall(function() FONT = Drawing.Fonts.System end)
+-- Monospace (JetBrains) for the cyberpunk look; falls back to System
+pcall(function() FONT = Drawing.Fonts.Monospace or Drawing.Fonts.System end)
 
 -- Values from a loaded config that the menu hasn't taken yet. Matcha's menu
 -- widgets only exist once the tab has been drawn, so a config loaded on
 -- execute couldn't be pushed into them and was silently lost. Until the
 -- menu accepts a value, the script reads it from here instead.
 local PENDING = {}
+local pendingTries = {}
 
+-- Config files store every number as a decimal (25.0). Matcha's sliders
+-- rejected those and dropped to 0 - that's why Parry Window, Speed and
+-- Agility Step all showed 0. Shape values the way the setting expects.
+local function fixValue(v, like)
+    if type(like) == "number" then
+        if type(v) == "string" then v = tonumber(v) end
+        if type(v) == "number" and v == math.floor(v) then v = math.floor(v) end
+        return v
+    elseif type(like) == "boolean" then
+        if type(v) == "string" then return v == "true" end
+        return v
+    end
+    if type(v) == "number" and v == math.floor(v) then return math.floor(v) end
+    return v
+end
+
+-- Since v16 the script has its OWN menu, so PENDING is simply the settings
+-- store: every setting lives here, set by the menu, configs and keybinds.
+-- No Matcha widgets are involved any more, so nothing can reset your
+-- settings behind your back, and reading a setting is just a table lookup
+-- (no call into Matcha 800+ times a second).
 local function V(id, default)
     local p = PENDING[id]
-    if p ~= nil then return p end
-    local ok, val = pcall(function() return UI.GetValue(id) end)
-    if ok and val ~= nil then return val end
+    if p ~= nil then
+        local fixed = fixValue(p, default)
+        if fixed ~= nil then return fixed end
+    end
     return default
+end
+
+local function SetV(id, v)
+    PENDING[id] = v
+    pendingTries[id] = nil
 end
 
 -------------------------------
@@ -147,7 +176,7 @@ do
                 end
             end
             if got then
-                pcall(function() UI.SetValue(id, got) end)
+                SetV(id, got)
                 pcall(function() notify("Bound to " .. got, "Set keybind", 2) end)
                 was[id] = true   -- the key is still down; don't fire it straight away
             end
@@ -235,12 +264,47 @@ local COL = {
     custom   = Color3.fromRGB(255, 120, 255),
 }
 
+-- CYBERPUNK THEME: neon cyan / hot pink / yellow on near-black - the same
+-- look as the Party HP overlay. With "Cyberpunk Theme" off, the colours
+-- you picked above are used instead. (CYBER.on is set by the settings read.)
+local CYBER = {
+    on     = true,
+    cyan   = Color3.fromRGB(0, 229, 255),
+    pink   = Color3.fromRGB(255, 42, 109),
+    yellow = Color3.fromRGB(252, 238, 10),
+    orange = Color3.fromRGB(255, 140, 40),
+    red    = Color3.fromRGB(255, 40, 70),
+    dim    = Color3.fromRGB(105, 125, 150),
+    bg     = Color3.fromRGB(8, 12, 22),
+    track  = Color3.fromRGB(22, 36, 54),
+}
+
 local function hpColor(pct)
+    if CYBER.on then
+        if pct > 0.60 then return CYBER.cyan end
+        if pct > 0.35 then return CYBER.yellow end
+        if pct > 0.15 then return CYBER.orange end
+        return CYBER.red
+    end
     if pct > 0.75 then return C_GREEN end
     if pct > 0.50 then return C_YELLOW end
     if pct > 0.25 then return C_ORANGE end
     return C_RED
 end
+
+-- Who is it? Players cyan, mobs pink, staff yellow (theme on)
+local function entColor(e)
+    if not CYBER.on then return e.color end
+    if e.role then return CYBER.yellow end
+    if e.isMob then return CYBER.pink end
+    if e.player then return CYBER.cyan end
+    return CYBER.dim
+end
+
+local OBJ_CYBER = {
+    artifact = CYBER.yellow, chest = CYBER.yellow, npcesp = CYBER.cyan,
+    ingred = CYBER.cyan, custom = CYBER.pink, misc = CYBER.orange,
+}
 
 local function cleanMobName(name)
     local n = string.gsub(name, "^%.", "")
@@ -397,7 +461,9 @@ local function readSettings()
     cfg.playerdist = V("dw_playerdist", 5000)
     cfg.mobdist   = V("dw_mobdist", 1000)
     cfg.espdist   = math.max(cfg.playerdist, cfg.mobdist)
-    cfg.smooth    = V("dw_smooth", true)
+    -- new id on purpose: old configs saved smoothing ON, which made the ESP
+    -- trail behind targets. It now starts OFF = drawn where they really are.
+    cfg.smooth    = V("dw_smooth2", false)
     cfg.smoothAmt = V("dw_smoothamt", 12)
     cfg.objdist   = V("dw_objdist", 1500)
     cfg.artdist   = V("dw_artdist", 20000)
@@ -409,7 +475,7 @@ local function readSettings()
     cfg.showUser  = V("dw_showuser", true)
     cfg.hpColorName = V("dw_hpcolorname", false)
     cfg.barDist   = V("dw_bardist", 200)
-    cfg.parry     = V("dw_parry", false)
+    cfg.parry     = false   -- parry timer removed
     cfg.parryCd   = V("dw_parrycd", 100) / 100
     cfg.parryKey  = V("dw_parrykey", 0)
     cfg.parryY    = V("dw_parryy", 25)
@@ -421,6 +487,23 @@ local function readSettings()
     cfg.proxdist  = V("dw_proxdist", 1000)
     cfg.mods      = V("dw_mods", true)
     cfg.bigwarn   = V("dw_bigwarn", true)
+    CYBER.on      = V("dw_cyber", true) and true or false
+    cfg.boxes     = V("dw_boxes", false)
+    cfg.showHpNum = V("dw_showhpnum", false)
+    cfg.hpPctOnly = V("dw_hppctonly", false)   -- just "92%", no bar / numbers
+    cfg.nofall    = V("dw_nofall", false)
+    cfg.nofallCap = V("dw_nofallsink", 30)   -- glide-down speed (new id: old one meant something else)
+    cfg.nofallMode  = V("dw_nofallmode", 2)   -- 0 = Glide, 1 = Speed Cap (old), 2 = Fall reset only
+    cfg.nofallMax   = V("dw_nofallcap2", 40)  -- Speed Cap mode: max fall speed
+    cfg.nofallDelay = V("dw_nofalldelay2", 0)  -- ms of real falling before it steps in (0 = safest)
+    cfg.nofallCatch = V("dw_nofallcatch", 20)  -- catch drops faster than this (studs/s)
+    cfg.nofallBreak = V("dw_nofallbreak", 12)  -- reset the game's fall count every N studs
+    cfg.tpSpeed   = V("dw_tpspeed", 120)
+    cfg.tpStopKey = V("dw_tpstopkey", "")
+    cfg.nofallKey = V("dw_nofallkey", "")
+    cfg.boatOn    = V("dw_boat", false)
+    cfg.boatMult  = V("dw_boatmult", 20)   -- x0.1
+    cfg.boatKey   = V("dw_boatkey", "")
     cfg.exphp     = V("dw_exphp", false)
     cfg.friends   = V("dw_friends", "")
     cfg.exphpms   = V("dw_exphpms", 250)
@@ -475,6 +558,9 @@ local function makeDrawings(e)
         barBg = newSquare(Color3.fromRGB(0, 0, 0), true, 1),
         bar   = newSquare(C_GREEN, true, 2),
         lines = {},
+        -- one outline box (was 8 separate corner lines per target, which
+        -- was up to 240 extra drawing updates every frame = lag)
+        box   = newSquare(CYBER.cyan, false, 2),
         last  = {},
     }
     for i = 1, 4 do e.d.lines[i] = newLine(Color3.fromRGB(0, 0, 0)) end
@@ -486,12 +572,21 @@ local function hideBar(d)
     for i = 1, 4 do d.lines[i].Visible = false end
 end
 
+local function hideCorners(d)
+    if d.boxShown then
+        d.box.Visible = false
+        d.boxShown = false
+    end
+end
+
 local function hideDrawings(e)
     local d = e.d
     if not d or not d.shown then return end
     d.name.Visible = false
     d.info.Visible = false
     hideBar(d)
+    hideCorners(d)
+    d.last.barOn = false
     d.shown = false
 end
 
@@ -500,6 +595,7 @@ local function freeDrawings(e)
     if not d then return end
     kill(d.name); kill(d.info); kill(d.barBg); kill(d.bar)
     for i = 1, 4 do kill(d.lines[i]) end
+    kill(d.box)
     e.d = nil
 end
 
@@ -619,9 +715,18 @@ local function refreshEntities()
                 presentTypes[e.mobType] = (presentTypes[e.mobType] or 0) + 1
             end
 
-            -- Resolve parts once (re-resolve if lost)
-            if not e.anchor then
+            -- Re-find the parts EVERY refresh. They used to be found once and
+            -- kept: when the game unloads a far mob and loads it back (or a
+            -- player respawns), the old part is dead and the label stuck to
+            -- where it used to be.
+            -- (about once a second per target, or right away if it's missing,
+            -- so a full server doesn't cost thousands of lookups a second)
+            e.model = model
+            e.reres = (e.reres or 0) + 1
+            if not e.anchor or e.reres >= 4 then
+                e.reres = 0
                 e.anchor = model:FindFirstChild("HumanoidRootPart") or model:FindFirstChild("Torso") or model:FindFirstChild("Head")
+                e.hum = nil
             end
             if not e.hum then
                 e.hum = model:FindFirstChild("Humanoid")
@@ -753,12 +858,36 @@ local OBJ_STYLE = {
     EventFeatherRef = { label = "Owl Feather", color = Color3.fromRGB(255, 255, 160), size = 12, flag = "misc" },
 }
 
+-- v24: Matcha doesn't answer IsA / FindFirstChildWhichIsA, so a model like
+-- BigArtifact (Model > BigArtifact > Meshes) never got a part to put the
+-- label on: "objects 2" on the status line, but nothing drawn. Now parts are
+-- recognised by ClassName and must actually give a Position.
+local PART_CLASS = { Part = true, MeshPart = true, UnionOperation = true, WedgePart = true,
+    CornerWedgePart = true, TrussPart = true, Seat = true, SpawnLocation = true }
+local function usablePart(inst)
+    local cls = nil
+    pcall(function() cls = inst.ClassName end)
+    if not PART_CLASS[cls] then return false end
+    local ok, pos = pcall(function() return inst.Position end)
+    return ok and pos ~= nil
+end
 local function objPart(obj)
-    local ok, isPart = pcall(function() return obj:IsA("BasePart") end)
-    if ok and isPart then return obj end
+    if usablePart(obj) then return obj end
     local p = nil
     pcall(function() p = obj.PrimaryPart end)
-    return p or obj:FindFirstChildWhichIsA("BasePart")
+    if p and usablePart(p) then return p end
+    -- children first, then a little deeper
+    local queue, qi = { obj }, 1
+    while qi <= #queue and qi <= 80 do
+        local kids = {}
+        pcall(function() kids = queue[qi]:GetChildren() end)
+        qi = qi + 1
+        for _, k in ipairs(kids) do
+            if usablePart(k) then return k end
+            table.insert(queue, k)
+        end
+    end
+    return nil
 end
 
 local objNameCount = {}
@@ -774,15 +903,8 @@ local function addObject(found, obj, label, color, size, flag)
         objects[key] = o
     end
     if not o.part then
-        o.part = objPart(obj)
-        if not o.part then
-            pcall(function()
-                for i, d in ipairs(obj:GetDescendants()) do
-                    if i > 60 then break end
-                    if d:IsA("BasePart") then o.part = d break end
-                end
-            end)
-        end
+        local okP, p = pcall(objPart, obj)
+        if okP then o.part = p end
     end
     if not o.seen then
         o.seen = true
@@ -824,6 +946,19 @@ local function refreshObjects()
                     local s = OBJ_STYLE.Campfire
                     addObject(found, obj, s.label, s.color, s.size, s.flag)
                 end
+            end
+        end
+    end
+
+    -- A picked-up / carried artifact sits right in workspace as
+    -- "BigArtifact" (your Close Scan: "6m BigArtifact"), not in Thrown
+    if cfg.artifact then
+        local kids = {}
+        pcall(function() kids = workspace:GetChildren() end)
+        for _, obj in ipairs(kids) do
+            if obj.Name == "BigArtifact" then
+                local s = OBJ_STYLE.BigArtifact
+                addObject(found, obj, s.label, s.color, s.size, s.flag)
             end
         end
     end
@@ -929,14 +1064,14 @@ local MAX_ROWS = 15
 
 local function makeBox()
     box = {
-        bg      = newSquare(Color3.fromRGB(14, 14, 18), true, 1),
+        bg      = newSquare(CYBER.on and CYBER.bg or Color3.fromRGB(14, 14, 18), true, 1),
         border  = newSquare(Color3.fromRGB(90, 90, 110), false, 2),
-        title   = newText(15, Color3.fromRGB(255, 255, 255), false),
-        warnBg  = newSquare(Color3.fromRGB(170, 0, 0), true, 2),
-        warn    = newText(16, Color3.fromRGB(255, 255, 255), false),
+        title   = newText(14, CYBER.on and CYBER.yellow or Color3.fromRGB(255, 255, 255), false),
+        warnBg  = newSquare(CYBER.on and Color3.fromRGB(70, 6, 30) or Color3.fromRGB(170, 0, 0), true, 2),
+        warn    = newText(15, CYBER.on and CYBER.yellow or Color3.fromRGB(255, 255, 255), false),
         rows    = {},
     }
-    pcall(function() box.bg.Transparency = 0.75 end)
+    pcall(function() box.bg.Transparency = CYBER.on and 0.85 or 0.75 end)
     for i = 1, MAX_ROWS do
         box.rows[i] = newText(14, Color3.fromRGB(255, 255, 255), false)
     end
@@ -946,9 +1081,9 @@ end
 local bigWarn = nil
 local function makeBigWarn()
     bigWarn = {
-        bg   = newSquare(Color3.fromRGB(160, 0, 0), true, 5),
-        text = newText(22, Color3.fromRGB(255, 255, 255), true),
-        sub  = newText(15, Color3.fromRGB(255, 220, 220), true),
+        bg   = newSquare(CYBER.on and Color3.fromRGB(70, 6, 30) or Color3.fromRGB(160, 0, 0), true, 5),
+        text = newText(20, CYBER.on and CYBER.yellow or Color3.fromRGB(255, 255, 255), true),
+        sub  = newText(14, CYBER.on and CYBER.pink or Color3.fromRGB(255, 220, 220), true),
     }
     pcall(function() bigWarn.bg.Transparency = 0.85 end)
     pcall(function() bigWarn.text.ZIndex = 6 end)
@@ -973,7 +1108,7 @@ local function updateBox()
         bigWarn.bg.Position = Vector2.new(cx - 220, 110)
         bigWarn.bg.Size = Vector2.new(440, 56)
         bigWarn.bg.Visible = true
-        bigWarn.text.Text = "/!\\  STAFF IN YOUR SERVER  /!\\"
+        bigWarn.text.Text = CYBER.on and "// WARNING :: STAFF IN SERVER //" or "/!\\  STAFF IN YOUR SERVER  /!\\"
         bigWarn.text.Position = Vector2.new(cx, 116)
         bigWarn.text.Visible = true
         local names = {}
@@ -1016,14 +1151,15 @@ local function updateBox()
     box.bg.Visible = true
     box.border.Position = Vector2.new(x, y)
     box.border.Size = Vector2.new(BOX_W, h)
-    box.border.Color = hasStaff and C_RED or COL.box
+    box.border.Color = hasStaff and (CYBER.on and CYBER.pink or C_RED) or (CYBER.on and CYBER.cyan or COL.box)
     box.border.Visible = true
 
     if hasStaff then
         box.warnBg.Position = Vector2.new(x + 1, cursor - 4)
         box.warnBg.Size = Vector2.new(BOX_W - 2, warnH)
         box.warnBg.Visible = true
-        box.warn.Text = "/!\\ STAFF IN SERVER (" .. #staffList .. ") /!\\"
+        box.warn.Text = CYBER.on and ("// STAFF IN SERVER [" .. #staffList .. "]")
+            or ("/!\\ STAFF IN SERVER (" .. #staffList .. ") /!\\")
         box.warn.Position = Vector2.new(x + 10, cursor)
         box.warn.Visible = true
         cursor = cursor + 24
@@ -1032,7 +1168,7 @@ local function updateBox()
             local s = staffList[i]
             local r = box.rows[rowsUsed]
             r.Text = s.role .. ": " .. s.name .. (s.char and (" | " .. s.char) or "")
-            r.Color = Color3.fromRGB(255, 255, 255)
+            r.Color = CYBER.on and CYBER.pink or Color3.fromRGB(255, 255, 255)
             r.Position = Vector2.new(x + 14, cursor)
             r.Visible = true
             cursor = cursor + ROW_H
@@ -1043,7 +1179,8 @@ local function updateBox()
         box.warn.Visible = false
     end
 
-    box.title.Text = "NEARBY PLAYERS (" .. #nearbyList .. ")  -  " .. cfg.proxdist .. "m"
+    box.title.Text = CYBER.on and ("// NEARBY.SCAN  [" .. #nearbyList .. "]  " .. cfg.proxdist .. "m")
+        or ("NEARBY PLAYERS (" .. #nearbyList .. ")  -  " .. cfg.proxdist .. "m")
     box.title.Position = Vector2.new(x + 10, cursor)
     box.title.Visible = true
     cursor = cursor + ROW_H + 2
@@ -1051,8 +1188,8 @@ local function updateBox()
     if #nearbyList == 0 then
         rowsUsed = rowsUsed + 1
         local r = box.rows[rowsUsed]
-        r.Text = "No one nearby"
-        r.Color = Color3.fromRGB(150, 150, 150)
+        r.Text = CYBER.on and "NO SIGNAL" or "No one nearby"
+        r.Color = CYBER.on and CYBER.dim or Color3.fromRGB(150, 150, 150)
         r.Position = Vector2.new(x + 14, cursor)
         r.Visible = true
     else
@@ -1061,24 +1198,26 @@ local function updateBox()
             if rowsUsed > MAX_ROWS then break end
             local n = nearbyList[i]
             local r = box.rows[rowsUsed]
+            local cy = CYBER.on
+            local sep = cy and "  //  " or "  -  "
             local label = n.name
             if n.char and n.char ~= "" then label = label .. " | " .. n.char end
-            label = label .. "  -  " .. math.floor(n.dist) .. "m"
+            label = label .. sep .. math.floor(n.dist) .. "m"
             -- health as a percent, for everyone in the box
             if n.pct then
-                label = label .. "  -  " .. math.floor(n.pct * 100 + 0.5) .. "%"
+                label = label .. sep .. math.floor(n.pct * 100 + 0.5) .. "%"
             end
-            local color = Color3.fromRGB(120, 255, 140)
+            local color = cy and CYBER.cyan or Color3.fromRGB(120, 255, 140)
             if n.role then
                 label = "[" .. n.role .. "] " .. label
-                color = C_ORANGE
+                color = cy and CYBER.yellow or C_ORANGE
             elseif n.pct and n.pct <= 0.75 then
                 -- hurt players stand out: the row takes their health colour
                 color = hpColor(n.pct)
             elseif n.dist < 150 then
-                color = C_RED
+                color = cy and CYBER.pink or C_RED
             elseif n.dist < 400 then
-                color = C_YELLOW
+                color = cy and CYBER.yellow or C_YELLOW
             end
             r.Text = label
             r.Color = color
@@ -1102,6 +1241,25 @@ end
 
 local UP = Vector3.new(0, 1, 0)
 
+-- Labels already placed this frame. Mobs in a group stood in the same spot,
+-- so their labels were drawn right on top of each other
+-- ("[829n][833m] mudskipper..."). Each new label moves up until it's clear.
+local LABELS = {}
+local function placeLabel(cx, y, w, h)
+    for _ = 1, 8 do
+        local hit = false
+        for _, p in ipairs(LABELS) do
+            if math.abs(cx - p.x) < (w + p.w) / 2 and math.abs(y - p.y) < h then
+                y = p.y - h
+                hit = true
+            end
+        end
+        if not hit then break end
+    end
+    table.insert(LABELS, { x = cx, y = y, w = w })
+    return y
+end
+
 local function renderEntity(e, myPos)
     logStep("R5 first ESP drawn", true)
     local anchor = e.anchor
@@ -1114,48 +1272,22 @@ local function renderEntity(e, myPos)
         return false
     end
 
-    -- IMPROVED SMOOTH: frame-rate independent exponential decay + velocity
-    -- prediction. Tracks where the target is heading and aims ahead of them
-    -- so the label sits ON the character instead of trailing behind.
+    -- Default: draw exactly where the target is, like Matcha's own ESP.
+    -- The old "prediction" guessed where targets were heading; positions
+    -- arrive in jumps over the network, so the guess overshot and labels
+    -- floated off the target. Optional smoothing now only eases toward the
+    -- REAL position - it can lag a touch but never overshoots.
     if cfg.smooth then
         local sm = e.sm
-        local prevReal = e.smPrevReal   -- last REAL position (not smoothed)
-        local vel = e.smVel or Vector3.new(0, 0, 0)
-
-        if not sm or (pos - sm).Magnitude > 40 then
-            -- Teleport / first frame: snap instantly
+        if not sm or (pos - sm).Magnitude > 25 then
             sm = pos
-            vel = Vector3.new(0, 0, 0)
-            e.smPrevReal = pos
         else
-            -- Estimate target velocity from how their real position changed
-            if prevReal then
-                local rawVel = (pos - prevReal) / math.max(frameDt, 0.001)
-                -- Smooth the velocity estimate (prevents jitter from network updates)
-                local vAlpha = 1 - math.exp(-10 * frameDt)
-                vel = vel:Lerp(rawVel, vAlpha)
-                -- Clamp velocity to sane range (prevent runaway on lag spikes)
-                if vel.Magnitude > 200 then
-                    vel = vel.Unit * 200
-                end
-            end
-            e.smPrevReal = pos
-
-            -- Predict where they'll be ~2 frames from now
-            local lookAhead = math.min(frameDt * 2.5, 0.08)
-            local predicted = pos + vel * lookAhead
-
-            -- Frame-rate independent exponential smoothing toward the predicted pos
-            local alpha = 1 - math.exp(-cfg.smoothAmt * frameDt)
-            sm = sm:Lerp(predicted, alpha)
+            sm = sm:Lerp(pos, 1 - math.exp(-(cfg.smoothAmt or 12) * 2 * frameDt))
         end
-        e.smVel = vel
         e.sm = sm
         pos = sm
     else
         e.sm = nil
-        e.smVel = nil
-        e.smPrevReal = nil
     end
 
     -- Project the top of the head and the feet so everything is sized to the
@@ -1176,75 +1308,113 @@ local function renderEntity(e, myPos)
     local cx = (headPos.X + feetPos.X) / 2
     local top = headPos.Y
 
-    -- Line 1: [1.6km] Quincy Adaset (87%) (475/542hp)
+    -- Line 1 (short): SUMMER THUG  92%      [+ 643/700 if HP numbers on]
+    -- Line 2 (small):  95m  //  @username
     local pct = e.pct
-    local line1 = e.label
-    if cfg.showDist then line1 = "[" .. fmtDist(dist) .. "] " .. line1 end
+    local cyber = CYBER.on
+    local col = entColor(e)
+    local line1 = cyber and string.upper(e.label) or e.label
     if cfg.showHp and pct then
-        line1 = line1 .. " (" .. math.floor(pct * 100 + 0.5) .. "%)"
-        if e.hp and e.maxhp then
-            line1 = line1 .. " (" .. math.floor(e.hp + 0.5) .. "/" .. math.floor(e.maxhp + 0.5) .. "hp)"
+        line1 = line1 .. "  " .. math.floor(pct * 100 + 0.5) .. "%"
+        if cfg.showHpNum and not cfg.hpPctOnly and e.hp and e.maxhp then
+            line1 = line1 .. "  " .. math.floor(e.hp + 0.5) .. "/" .. math.floor(e.maxhp + 0.5)
         end
     end
-
-    -- Line 2: [Power 20] [90ms] @username
     local parts = {}
-    if not e.isMob then
-        if cfg.showUser and e.username and e.username ~= e.label then
-            table.insert(parts, "@" .. e.username)
-        end
+    if cfg.showDist then table.insert(parts, fmtDist(dist)) end
+    if not e.isMob and cfg.showUser and e.username and e.username ~= e.label then
+        table.insert(parts, "@" .. e.username)
     end
-    local line2 = table.concat(parts, " ")
+    local line2 = table.concat(parts, cyber and "  //  " or "  ")
 
-    -- Name color: white normally, orange for staff, HP color if enabled
-    local nameColor = e.color
-    -- Only recolor when hurt; at full-ish HP the name keeps your picked color
+    -- name keeps its colour until hurt, then takes the health colour
+    local nameColor = col
     if cfg.hpColorName and pct and pct <= 0.75 and not e.role then nameColor = hpColor(pct) end
+    local infoColor = cyber and CYBER.dim or Color3.fromRGB(200, 200, 200)
 
+    -- Every drawing write is a call into Matcha, so nothing is written
+    -- unless it changed: positions are rounded to whole pixels and compared
+    -- to last frame, and Visible is only flipped when it actually changes.
+    local wasShown = d.shown
     if last.l1 ~= line1 then d.name.Text = line1; last.l1 = line1 end
     if last.c1 ~= nameColor then d.name.Color = nameColor; last.c1 = nameColor end
-    local nameY = top - (line2 ~= "" and 30 or 16)
-    d.name.Position = Vector2.new(cx, nameY)
-    d.name.Visible = true
+    if last.ic ~= infoColor then d.info.Color = infoColor; last.ic = infoColor end
+    local blockH = (line2 ~= "") and 28 or 15
+    local nameY = placeLabel(cx, top - blockH - 2, #line1 * 7, blockH)
+    local nx, ny = math.floor(cx + 0.5), math.floor(nameY + 0.5)
+    if last.nx ~= nx or last.ny ~= ny then
+        d.name.Position = Vector2.new(nx, ny)
+        d.info.Position = Vector2.new(nx, ny + 14)
+        last.nx, last.ny = nx, ny
+    end
+    if not wasShown then d.name.Visible = true end
 
-    if line2 ~= "" then
-        if last.l2 ~= line2 then d.info.Text = line2; last.l2 = line2 end
-        d.info.Position = Vector2.new(cx, nameY + 14)
-        d.info.Visible = true
-    else
-        d.info.Visible = false
+    local wantInfo = line2 ~= ""
+    if wantInfo and last.l2 ~= line2 then d.info.Text = line2; last.l2 = line2 end
+    if not wasShown or last.iv ~= wantInfo then
+        d.info.Visible = wantInfo
+        last.iv = wantInfo
     end
 
-    -- Health bar: only inside the bar radius, left side, exactly character height
-    if pct and cfg.showHp and dist <= cfg.barDist and charH >= 8 then
+    -- Optional outline box (one drawing, theme on, off by default)
+    if cyber and cfg.boxes == true and charH >= 10 then
+        local w = math.floor(charH * 0.55 + 0.5)
+        local bx, by, bh = math.floor(cx - w / 2 + 0.5), math.floor(top + 0.5), math.floor(charH + 0.5)
+        if last.bx ~= bx or last.by ~= by or last.bw ~= w or last.bh ~= bh then
+            d.box.Position = Vector2.new(bx, by)
+            d.box.Size = Vector2.new(w, bh)
+            last.bx, last.by, last.bw, last.bh = bx, by, w, bh
+        end
+        if last.boxc ~= col then d.box.Color = col; last.boxc = col end
+        if not d.boxShown then d.box.Visible = true; d.boxShown = true end
+    else
+        hideCorners(d)
+    end
+
+    -- Health bar: only inside the bar radius, left side, character height
+    if pct and cfg.showHp and not cfg.hpPctOnly and dist <= cfg.barDist and charH >= 8 then
         local barW = (charH > 80) and 3 or 2
-        local width = charH * 0.55
-        local bx = cx - width / 2 - barW - 4
-        local by = top
+        local bx = math.floor(cx - charH * 0.275 - barW - 4 + 0.5)
+        local by = math.floor(top + 0.5)
+        local h = math.floor(charH + 0.5)
+        local fill = math.floor(h * pct + 0.5)
 
-        d.barBg.Position = Vector2.new(bx - 1, by - 1)
-        d.barBg.Size = Vector2.new(barW + 2, charH + 2)
-        d.barBg.Visible = true
-
-        local fill = charH * pct
-        d.bar.Position = Vector2.new(bx, by + (charH - fill))
-        d.bar.Size = Vector2.new(barW, fill)
+        local trackC = cyber and CYBER.track or Color3.fromRGB(0, 0, 0)
+        if last.tc ~= trackC then
+            d.barBg.Color = trackC
+            for i = 1, 4 do d.lines[i].Color = cyber and CYBER.bg or Color3.fromRGB(0, 0, 0) end
+            last.tc = trackC
+        end
+        if last.hx ~= bx or last.hy ~= by or last.hh ~= h or last.hf ~= fill then
+            d.barBg.Position = Vector2.new(bx - 1, by - 1)
+            d.barBg.Size = Vector2.new(barW + 2, h + 2)
+            d.bar.Position = Vector2.new(bx, by + (h - fill))
+            d.bar.Size = Vector2.new(barW, fill)
+            local segs = h >= 40
+            for i = 1, 4 do
+                if segs then
+                    local ly = by + h * (1 - i * 0.2)
+                    d.lines[i].From = Vector2.new(bx, ly)
+                    d.lines[i].To = Vector2.new(bx + barW, ly)
+                end
+            end
+            if last.segs ~= segs then
+                for i = 1, 4 do d.lines[i].Visible = segs end
+                last.segs = segs
+            end
+            last.hx, last.hy, last.hh, last.hf = bx, by, h, fill
+        end
         local bc = hpColor(pct)
         if last.bc ~= bc then d.bar.Color = bc; last.bc = bc end
-        d.bar.Visible = true
-
-        if charH >= 40 then
-            for i = 1, 4 do
-                local ly = by + charH * (1 - i * 0.2)
-                d.lines[i].From = Vector2.new(bx, ly)
-                d.lines[i].To = Vector2.new(bx + barW, ly)
-                d.lines[i].Visible = true
-            end
-        else
-            for i = 1, 4 do d.lines[i].Visible = false end
+        if not last.barOn then
+            d.barBg.Visible = true
+            d.bar.Visible = true
+            if last.segs then for i = 1, 4 do d.lines[i].Visible = true end end
+            last.barOn = true
         end
-    else
+    elseif last.barOn then
         hideBar(d)
+        last.barOn = false
     end
 
     d.shown = true
@@ -1280,9 +1450,14 @@ local function renderObject(o, myPos)
     if not o.text then
         o.text = newText(o.size, o.color, true)
     end
-    local txt = o.label .. (dist and (" [" .. math.floor(dist) .. "m]") or "")
+    local txt
+    if CYBER.on then
+        txt = string.upper(o.label) .. (dist and ("  //  " .. math.floor(dist) .. "m") or "")
+    else
+        txt = o.label .. (dist and (" [" .. math.floor(dist) .. "m]") or "")
+    end
     if o.lastText ~= txt then o.text.Text = txt; o.lastText = txt end
-    o.text.Color = COL[o.flag] or o.color
+    o.text.Color = (CYBER.on and OBJ_CYBER[o.flag]) or COL[o.flag] or o.color
     o.text.Position = screen
     o.text.Visible = true
     o.shown = true
@@ -1298,13 +1473,21 @@ local function renderFrame()
     lastFrameAt = nowT
     local myPos = getMyPos()
 
-    local drawn = 0
+    -- nearest first, so the closest target keeps its label spot and the
+    -- ones behind it move out of the way
+    LABELS = {}
+    local list = {}
     for _, e in pairs(entities) do
         if e.want then
-            if renderEntity(e, myPos) then drawn = drawn + 1 end
+            table.insert(list, e)
         elseif e.d and e.d.shown then
             hideDrawings(e)
         end
+    end
+    table.sort(list, function(a, b) return (a.dist or 1e9) < (b.dist or 1e9) end)
+    local drawn = 0
+    for _, e in ipairs(list) do
+        if renderEntity(e, myPos) then drawn = drawn + 1 end
     end
     for _, o in pairs(objects) do
         renderObject(o, myPos)
@@ -2120,8 +2303,6 @@ local function onFrame()
         local ok, err = pcall(renderFrame)
         if not ok then lastErr = tostring(err); report("render", err) end
     end
-    local okP, errP = pcall(updateParry)
-    if not okP then lastErr = tostring(errP); report("parry", errP) end
 
     -- Noclip / fly are NOT run from this script any more. Matcha has its own
     -- No-Clip and Flight under Character > Movement, and those are built into
@@ -2136,7 +2317,7 @@ local function onFrame()
                 status.Color = C_RED
                 status.Text = "DW ERROR: " .. string.sub(lastErr, 1, 90)
             else
-                status.Color = Color3.fromRGB(0, 255, 120)
+                status.Color = CYBER.on and CYBER.cyan or Color3.fromRGB(0, 255, 120)
                 status.Text = string.format("DW%s | Live %d | ESP drawn %d | objects %d | pos: %s (body-cam %dm)",
                     cfg.lowimpact and " [LOW IMPACT]" or "", stats.live, stats.drawn, stats.objects,
                     posInfo.usingCam and "CAMERA" or "body", math.floor(posInfo.gap))
@@ -2987,6 +3168,9 @@ end
 -- Your Matcha may ignore that one; the status line tells you.
 -------------------------------
 
+-- Teleports (filled in further down; declared here so No Fall can see it)
+local TP = { status = "Idle", running = false, areas = {}, spots = {} }
+
 local SPD = { status = "Off" }
 do
     local SPEED_KEYS = { [1] = 0x58, [2] = 0x43, [3] = 0x56, [4] = 0x42, [5] = 0x5A } -- X C V B Z
@@ -3020,6 +3204,188 @@ do
     local function writeVel(root, v)
         local ok = pcall(function() root.AssemblyLinearVelocity = v end)
         if not ok then pcall(function() root.Velocity = v end) end
+    end
+
+    -------------------------------------------------------------------
+    -- NO FALL DAMAGE (glide)
+    -- v13 capped fall speed at 40, but you still landed INJURED: the game
+    -- isn't judging how hard you hit, it's judging the fall itself. Flying
+    -- never got you hurt, because while flying your downward speed is ~0
+    -- and the game never sees a fall start. So this does the same: the
+    -- moment you start dropping, your fall speed is set back to 0 and you
+    -- sink by being MOVED down instead of by falling. (Rain's real no-fall
+    -- needs the game's EffectReplicator, which Standard Matcha can't call.)
+    -------------------------------------------------------------------
+    SPD.fallStatus = "Off"
+    local nfLast = tick()
+    SPD.noFall = function()
+        local now = tick()
+        local dt = clamp(now - nfLast, 0, 0.1)
+        nfLast = now
+        if KB.pressed("dw_nofallkey", cfg.nofallKey) then
+            cfg.nofall = not cfg.nofall
+            SetV("dw_nofall", cfg.nofall)
+            pcall(function() notify(cfg.nofall and "No Fall ON" or "No Fall OFF", "No Fall", 2) end)
+        end
+        if not cfg.nofall then SPD.fallStatus = "Off"; SPD.gliding, SPD.prevVY = false, nil; return end
+        if TP and TP.running then SPD.fallStatus = "paused (teleport moving you)"; SPD.gliding, SPD.prevVY = false, nil; return end
+        local _, root = myParts()
+        if not root then SPD.fallStatus = "ON (no character)"; return end
+        local vel = readVel(root)
+        if not vel then SPD.fallStatus = "ON - can't read your velocity"; return end
+
+        -- v21: FALL BREAKER - from the game's own fall code (dw_fallcode.txt,
+        -- WorldClient fall()). While you're in the air it adds up how far you
+        -- drop each frame. The moment you go UP even a little for one frame,
+        -- that fall is over and a new one starts from 0. Damage only happens
+        -- when one unbroken fall goes past ~20-40 studs. So every few studs
+        -- of drop we lift you a hair: every fall the game measures stays tiny.
+        local y = nil
+        pcall(function() y = root.Position.Y end)
+        local brk = SPD.brk or {}
+        SPD.brk = brk
+        if y then
+            if not brk.top or not brk.prev or y > brk.prev + 0.01 or now - (brk.t or 0) > 0.5 then
+                brk.top = y   -- went up (or first frame): the game started a new fall too
+            end
+            local limit = clamp(tonumber(cfg.nofallBreak) or 12, 4, 30)
+            if brk.top - y >= limit then
+                -- more than one frame of falling, so the game sees Y go up
+                local lift = math.max(0.6, math.abs(vel.Y) * 0.05 + 0.3)
+                local p = nil
+                pcall(function() p = root.Position end)
+                if p and pcall(function() root.Position = p + Vector3.new(0, lift, 0) end) then
+                    y = y + lift
+                    brk.top = y
+                    brk.count = (brk.count or 0) + 1
+                end
+            end
+            brk.prev, brk.t = y, now
+        end
+        local mode = tonumber(cfg.nofallMode) or 0
+        if mode == 2 then
+            SPD.gliding = false
+            SPD.fallStatus = string.format("ON - fall reset every %d studs (%d resets)",
+                clamp(tonumber(cfg.nofallBreak) or 12, 4, 30), brk.count or 0)
+            return
+        end
+
+        -- v20: only REAL falling counts. Gravity speeds you up a little
+        -- every frame; Matcha's Flight (or a teleport) sets your speed
+        -- directly and it barely changes frame to frame. v14-v19 grabbed
+        -- anything moving down faster than 8, so flying down/straight got
+        -- yanked back and forth between Flight and the glide = the lag.
+        -- (Matcha hands back nil for workspace.Gravity - that nil crashed v20
+        -- every frame, so No Fall did nothing at all)
+        local g = nil
+        pcall(function() g = tonumber(workspace.Gravity) end)
+        if not g or g <= 0 then g = 196.2 end
+        local base = SPD.wrote or SPD.prevVY or vel.Y   -- what the speed was after last frame
+        local dv = vel.Y - base
+        local pull = g * dt
+        local gravityLike = dv < -0.5 and dv > -(pull * 2.5 + 2)
+        SPD.prevVY, SPD.wrote = vel.Y, nil
+
+        local catch = clamp(tonumber(cfg.nofallCatch) or 20, 8, 60)
+        local delay = clamp(tonumber(cfg.nofallDelay) or 0, 0, 2000) / 1000
+        if not SPD.gliding then
+            if vel.Y < -1 and gravityLike then
+                SPD.fallFrames = (SPD.fallFrames or 0) + 1
+                SPD.fallSince = SPD.fallSince or now
+            elseif dv > 1 or vel.Y > -1 then
+                SPD.fallFrames, SPD.fallSince = 0, nil   -- going up / standing: not a fall
+            end
+            -- (frames where the speed didn't change are ignored: Flight)
+            if vel.Y < -catch and (SPD.fallFrames or 0) >= 2 and now - (SPD.fallSince or now) >= delay then
+                SPD.gliding, SPD.calmSince = true, nil
+            else
+                SPD.fallStatus = (vel.Y < -catch and (SPD.fallFrames or 0) < 2)
+                    and "ON - not a real fall (flying?), left alone" or "ON - waiting for a drop"
+                return
+            end
+        else
+            -- what we set last frame plus one frame of gravity is expected.
+            -- Anything else means Flight / a jump / a teleport took over.
+            if dv > 2 or dv < -(pull * 2.5 + 4) then
+                SPD.gliding, SPD.fallFrames, SPD.fallSince = false, 0, nil
+                SPD.fallStatus = "ON - let go (something else is moving you)"
+                return
+            end
+            if vel.Y > -0.5 and dv > -0.5 then
+                -- no gravity since last frame: standing on something
+                SPD.calmSince = SPD.calmSince or now
+                if now - SPD.calmSince > 0.08 then
+                    SPD.gliding, SPD.fallFrames, SPD.fallSince = false, 0, nil
+                    SPD.fallStatus = "ON - landed"
+                    return
+                end
+            else
+                SPD.calmSince = nil
+            end
+        end
+
+        if mode == 1 then
+            -- SPEED CAP (the old one): fall, but never faster than the cap
+            local cap = clamp(tonumber(cfg.nofallMax) or 40, 5, 200)
+            if vel.Y < -cap then
+                writeVel(root, Vector3.new(vel.X, -cap, vel.Z))
+                SPD.wrote = -cap
+            end
+            SPD.fallStatus = string.format("ON - speed cap %d", cap)
+        else
+            -- GLIDE: fall speed held at 0, you're moved down instead.
+            -- Stops moving you down the moment nothing is pulling you any more,
+            -- so it never shoves you into the floor once you've landed.
+            local sink = clamp(tonumber(cfg.nofallCap) or 30, 5, 120)
+            writeVel(root, Vector3.new(vel.X, 0, vel.Z))
+            SPD.wrote = 0
+            if not SPD.calmSince or now - SPD.calmSince < 0.02 then
+                local p = nil
+                pcall(function() p = root.Position end)
+                if p then pcall(function() root.Position = p - Vector3.new(0, sink * dt, 0) end) end
+            end
+            SPD.fallStatus = string.format("ON - gliding down (%d studs/s)", sink)
+        end
+    end
+
+    -- Saves the game's own fall-damage script as text (Matcha can decompile
+    -- local scripts). If glide still lets damage through, send me this file
+    -- and I can see exactly what the game checks.
+    SPD.dumpFallCode = function()
+        task.spawn(function()
+            local found = {}
+            pcall(function()
+                local pg = LocalPlayer:FindFirstChild("PlayerGui")
+                local wc = pg and pg:FindFirstChild("WorldClient")
+                if wc then table.insert(found, wc) end
+            end)
+            if #found == 0 then
+                pcall(function()
+                    for _, s in ipairs(getscripts()) do
+                        local n = ""
+                        pcall(function() n = s.Name end)
+                        local l = string.lower(n)
+                        if string.find(l, "world") or string.find(l, "fall") then table.insert(found, s) end
+                        if #found >= 4 then break end
+                    end
+                end)
+            end
+            if #found == 0 then
+                pcall(function() notify("Couldn't find the game's fall script", "Fall Debug", 5) end)
+                return
+            end
+            local out = {}
+            for _, s in ipairs(found) do
+                local name = "?"
+                pcall(function() name = s:GetFullName() end)
+                local src = nil
+                pcall(function() src = decompile(s) end)
+                table.insert(out, "==== " .. name .. " ====")
+                table.insert(out, type(src) == "string" and src or "(decompile failed)")
+            end
+            pcall(function() writefile("dw_fallcode.txt", table.concat(out, "\n")) end)
+            pcall(function() notify("Wrote dw_fallcode.txt - send it to me", "Fall Debug", 6) end)
+        end)
     end
 
     -- Velocity mode: speed comes from WalkSpeed (never from our own boosted
@@ -3105,22 +3471,14 @@ do
         local up = KB.pressed("dw_agiupkey", cfg.agiUp)
         local down = KB.pressed("dw_agidownkey", cfg.agiDown)
         if up or down then
+            -- a step of 0 (what the zeroed slider gave you) would do nothing
             local s = math.max(math.floor(tonumber(cfg.agiStep) or 5), 1)
             local amt = clamp(agiAmount() + (up and s or -s), 1, 100000)
             cfg.agiCustom = tostring(amt)
-            pcall(function() UI.SetValue("dw_agicustom", cfg.agiCustom) end)
+            SetV("dw_agicustom", cfg.agiCustom)
             pcall(function()
                 notify(string.format("amount %d  ->  agility %g", amt, agiFromAmount(amt)), "Agility", 1.5)
             end)
-        end
-        local su = KB.pressed("dw_spdupkey", cfg.spdUp)
-        local sd = KB.pressed("dw_spddownkey", cfg.spdDown)
-        if su or sd then
-            local s = math.max(math.floor(tonumber(cfg.spdStep) or 1), 1)
-            local v = clamp(math.floor((cfg.speedMult or 20) + (su and s or -s)), 11, 50)
-            cfg.speedMult = v
-            pcall(function() UI.SetValue("dw_speedmult", v) end)
-            pcall(function() notify(string.format("Speed %.1fx", v / 10), "Speed", 1.5) end)
         end
         if KB.pressed("dw_talhlkey", cfg.talKey) and TT.highlight then pcall(TT.highlight) end
     end
@@ -3129,28 +3487,16 @@ do
         pcall(stepKeys)
         local on = cfg.speedOn and true or false
 
-        -- hotkey toggle: your own key if you set one, else the old dropdown
-        local flip = false
-        if KB.vk(cfg.speedKeyName) then
-            flip = KB.pressed("dw_speedkeyname", cfg.speedKeyName)
-        else
-            local k = SPEED_KEYS[cfg.speedKey or 0]
-            if k then
-                local down = false
-                pcall(function() down = iskeypressed(k) end)
-                flip = down and not keyWas
-                keyWas = down
-            end
-        end
-        if flip then
+        if KB.pressed("dw_speedkeyname", cfg.speedKeyName) then
             on = not on
             cfg.speedOn = on
-            pcall(function() UI.SetValue("dw_speed", on) end)
-            pcall(function() notify(on and "Speed ON" or "Speed OFF", "Movement", 2) end)
+            SetV("dw_speed", on)
+            pcall(function() notify(on and "Agility Spoof ON" or "Agility Spoof OFF", "Agility", 2) end)
         end
 
-        local mode = cfg.speedMode or 0
-        local mult = clamp((cfg.speedMult or 20) / 10, 1.1, 5)
+        -- PassiveAgility is the only spoof now (Push / Velocity removed)
+        local mode = 2
+        local mult = 1
         local me, root, hum = myParts()
         if not root then
             SPD.status = on and "No character (dead / loading?)" or "Off"
@@ -3291,7 +3637,7 @@ do
     local SM_KEYS = { [1] = 0x4E, [2] = 0x4D, [3] = 0x4A, [4] = 0x4B, [5] = 0x4C } -- N M J K L
     SPD.stunStep = function(dt)
         local on = cfg.stunOn and true or false
-        local k = SM_KEYS[cfg.stunKey or 0]
+        local k = nil   -- quick-pick keys removed; only the key you set
         local custom = KB.vk(cfg.stunKeyName) ~= nil
         if custom or k then
             local down, edge
@@ -3305,7 +3651,7 @@ do
             if edge then
                 on = not on
                 cfg.stunOn = on
-                pcall(function() UI.SetValue("dw_stunmove", on) end)
+                SetV("dw_stunmove", on)
                 pcall(function() notify(on and "Move While Stunned ON" or "Move While Stunned OFF", "Movement", 2) end)
             end
             sm.keyWas = down
@@ -3376,6 +3722,207 @@ do
             if not ok then report("speed", err) end
             local ok2, err2 = pcall(SPD.stunStep, dt)
             if not ok2 then report("stunmove", err2) end
+            local ok3, err3 = pcall(SPD.noFall)
+            if not ok3 then report("nofall", err3) end
+            task.wait()
+        end
+    end)
+end
+
+-------------------------------
+-- BOAT SPEED
+-- Pushes you (and the boat you're sitting on) a bit further every frame in
+-- the direction the boat is ALREADY going. The game's own speed is never
+-- touched, so it can't snowball: no sail = no speed = no push.
+-------------------------------
+local BOAT = { status = "Off", partName = nil }
+do
+    local lastT = tick()
+    local lastPos, lastDir, guard = nil, nil, 0
+    local boatPart, nextSearch, searching = nil, 0, false
+    local PARTC = { Part = true, MeshPart = true, UnionOperation = true, WedgePart = true,
+        Seat = true, VehicleSeat = true, CornerWedgePart = true, TrussPart = true }
+    local SKIP = { Terrain = true, Camera = true }
+
+    local function parts()
+        local live = workspace:FindFirstChild("Live")
+        local me = live and live:FindFirstChild(LocalPlayer.Name)
+        return me, me and me:FindFirstChild("HumanoidRootPart")
+    end
+
+    local function velOf(p)
+        local v = nil
+        pcall(function() v = p.AssemblyLinearVelocity end)
+        if not (v and type(v.X) == "number") then
+            v = nil
+            pcall(function() v = p.Velocity end)
+        end
+        if v and type(v.X) == "number" then return v end
+        return nil
+    end
+
+    -- Walk workspace (Matcha can't tell us SeatPart / Sit) and call fn for
+    -- every part within `radius` of `center` that isn't part of you.
+    local function nearParts(center, radius, me, fn)
+        local queue, qi, budget = {}, 1, 12000
+        for _, c in ipairs(workspace:GetChildren()) do
+            local n = ""
+            pcall(function() n = c.Name end)
+            if not SKIP[n] then table.insert(queue, { c, 1, n }) end
+        end
+        while qi <= #queue and budget > 0 do
+            local inst, depth, path = queue[qi][1], queue[qi][2], queue[qi][3]
+            qi = qi + 1
+            budget = budget - 1
+            if budget % 400 == 0 then task.wait() end
+            if inst ~= me then
+                local cls = ""
+                pcall(function() cls = inst.ClassName end)
+                if PARTC[cls] then
+                    local pos = nil
+                    pcall(function() pos = inst.Position end)
+                    if pos and (pos - center).Magnitude <= radius then fn(inst, path, cls, pos) end
+                end
+                if depth < 6 and (cls == "Folder" or cls == "Model" or PARTC[cls]) then
+                    local kids = {}
+                    pcall(function() kids = inst:GetChildren() end)
+                    if #kids < 3000 then
+                        for _, k in ipairs(kids) do
+                            local kn = "?"
+                            pcall(function() kn = k.Name end)
+                            table.insert(queue, { k, depth + 1, path .. "/" .. kn })
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    -- the boat = a part near you moving the same way you are
+    local function findBoat(me, rpos, rvel)
+        local best, bestScore = nil, 1e9
+        nearParts(rpos, 25, me, function(p, path, cls, pos)
+            local v = velOf(p)
+            if v then
+                local d = math.abs(v.X - rvel.X) + math.abs(v.Z - rvel.Z)
+                local score = d + (pos - rpos).Magnitude * 0.05
+                if d < 4 and score < bestScore then best, bestScore = p, score; BOAT.partName = path end
+            end
+        end)
+        return best
+    end
+
+    local function step(dt)
+        if KB.pressed("dw_boatkey", cfg.boatKey) then
+            cfg.boatOn = not cfg.boatOn
+            SetV("dw_boat", cfg.boatOn)
+            pcall(function() notify(cfg.boatOn and "Boat Speed ON" or "Boat Speed OFF", "Boat", 2) end)
+        end
+        if not cfg.boatOn then BOAT.status = "Off"; lastPos = nil; boatPart = nil; return end
+        local me, root = parts()
+        if not root then BOAT.status = "ON (no character)"; lastPos = nil; return end
+
+        local pos = nil
+        pcall(function() pos = root.Position end)
+        if not pos then return end
+        local vel = velOf(root)
+        local vx, vz = 0, 0
+        if vel then
+            vx, vz = vel.X, vel.Z
+        elseif lastPos and dt > 0 then
+            vx, vz = (pos.X - lastPos.X) / dt, (pos.Z - lastPos.Z) / dt
+        end
+        local hs = math.sqrt(vx * vx + vz * vz)
+        local now = tick()
+
+        if lastDir and lastPos then
+            local back = (pos.X - lastPos.X) * lastDir[1] + (pos.Z - lastPos.Z) * lastDir[2]
+            if back < -0.2 then guard = now + 0.5 end
+        end
+        lastDir = nil
+        if hs < 2 then
+            BOAT.status = "ON - waiting for the boat to move"
+            lastPos = pos
+            return
+        end
+        if now < guard then
+            BOAT.status = "ON - paused (hit something / pulled back)"
+            lastPos = pos
+            return
+        end
+
+        -- look for the boat in the background while you sail
+        if not boatPart and not searching and now > nextSearch and vel then
+            searching, nextSearch = true, now + 3
+            task.spawn(function()
+                local ok, p = pcall(findBoat, me, pos, vel)
+                if ok and p then boatPart = p end
+                searching = false
+            end)
+        end
+
+        local mult = clamp((tonumber(cfg.boatMult) or 20) / 10, 1, 10)
+        local push = math.min(hs * (mult - 1) * dt, 4)
+        local ux, uz = vx / hs, vz / hs
+        local off = Vector3.new(ux * push, 0, uz * push)
+        local onBoat = false
+        if boatPart then
+            local bp = nil
+            pcall(function() bp = boatPart.Position end)
+            if bp and (bp - pos).Magnitude < 40 then
+                onBoat = pcall(function() boatPart.Position = bp + off end)
+            else
+                boatPart = nil   -- got off / boat gone
+            end
+        end
+        pcall(function() root.Position = pos + off end)
+        lastDir = { ux, uz }
+        lastPos = pos + off
+        BOAT.status = string.format("ON %.1fx (%d -> ~%d studs/s) %s", mult, math.floor(hs), math.floor(hs * mult),
+            onBoat and ("boat: " .. tostring(BOAT.partName)) or (searching and "[looking for the boat]" or "[moving you only]"))
+    end
+
+    -- Boat Scan: every part within 30 studs, with how fast it's moving.
+    -- Sail, then press it: the boat is the stuff moving at your speed.
+    function BOAT.scan()
+        task.spawn(function()
+            local out = { "DW boat scan v2 " .. os.date() }
+            local me, root = parts()
+            local rpos = nil
+            pcall(function() rpos = root.Position end)
+            if not rpos then table.insert(out, "no character") else
+                local rv = velOf(root)
+                table.insert(out, "you: speed " .. (rv and string.format("%.1f", Vector3.new(rv.X, 0, rv.Z).Magnitude) or "?"))
+                local rows = {}
+                nearParts(rpos, 30, me, function(p, path, cls, pos)
+                    local v = velOf(p)
+                    local sp = v and Vector3.new(v.X, 0, v.Z).Magnitude or -1
+                    table.insert(rows, { d = (pos - rpos).Magnitude, line = string.format("%5.1fm  speed %6.1f  %s  (%s)",
+                        (pos - rpos).Magnitude, sp, path, cls) })
+                end)
+                table.sort(rows, function(a, b) return a.d < b.d end)
+                table.insert(out, "-- parts within 30 studs (closest first): " .. #rows .. " --")
+                for i, r in ipairs(rows) do
+                    if i > 120 then break end
+                    table.insert(out, r.line)
+                end
+            end
+            pcall(function() writefile("dw_boat.txt", table.concat(out, "\n")) end)
+            for i, l in ipairs(out) do
+                if i > 30 then break end
+                print("[DW boat] " .. l)
+            end
+            pcall(function() notify("Wrote dw_boat.txt - send it to me", "Boat Scan", 5) end)
+        end)
+    end
+
+    task.spawn(function()
+        while true do
+            local now = tick()
+            local dt = clamp(now - lastT, 0, 0.1)
+            lastT = now
+            local ok, err = pcall(step, dt)
+            if not ok then report("boat", err) end
             task.wait()
         end
     end)
@@ -3556,10 +4103,13 @@ local configNames = {}
 
 local CONFIG_IDS = {
     "dw_esp", "dw_mobesp", "dw_showhp", "dw_showdist", "dw_showuser", "dw_hpcolorname",
-    "dw_bardist", "dw_playerdist", "dw_mobdist", "dw_maxdraw", "dw_smooth", "dw_smoothamt",
+    "dw_bardist", "dw_playerdist", "dw_mobdist", "dw_maxdraw", "dw_smooth2", "dw_smoothamt",
     "dw_artifact", "dw_artdist", "dw_artalert", "dw_chest", "dw_npcesp", "dw_miscobj", "dw_ingred", "dw_objdist",
     "dw_nearby", "dw_prox", "dw_proxdist", "dw_mods", "dw_bigwarn",
     "dw_exphp", "dw_friends", "dw_exphpms",
+    "dw_cyber", "dw_boxes", "dw_showhpnum", "dw_hppctonly", "dw_nofall", "dw_nofallsink", "dw_nofallkey",
+    "dw_tpspeed", "dw_tpstopkey",
+    "dw_nofallmode", "dw_nofallcap2", "dw_nofalldelay2", "dw_nofallcatch", "dw_nofallbreak", "dw_boat", "dw_boatmult", "dw_boatkey", "dw_menukey",
     "dw_parry", "dw_parrykey", "dw_parrywin", "dw_parrycd", "dw_parryy", "dw_parryreset", "dw_parryreseton", "dw_rechotkey",
     "dw_refresh", "dw_status", "dw_autoload", "dw_camgap",
     "dw_talenttrack", "dw_talentnotify", "dw_talentcards", "dw_talentpanel", "dw_cardyoff",
@@ -3638,11 +4188,14 @@ local function loadConfig(name, silent)
         if type(data.values) == "table" then
             for id, v in pairs(data.values) do
                 -- the script uses it right away; the menu catches up when drawn
-                PENDING[id] = v
-                pcall(function() UI.SetValue(id, v) end)
+                PENDING[id] = fixValue(v, nil)
+                pendingTries[id] = nil
+                pcall(function() UI.SetValue(id, PENDING[id]) end)
                 count = count + 1
             end
         end
+        -- configs saved on v16-v18 kept INSERT, which is Matcha's own menu key
+        if PENDING.dw_menukey == "INSERT" then PENDING.dw_menukey = "END" end
         pcall(readSettings)
         if type(data.colors) == "table" then
             for cname, rgb in pairs(data.colors) do
@@ -3656,6 +4209,7 @@ local function loadConfig(name, silent)
             for id, v in pairs(data.mobs) do
                 pendingMob[id] = v
                 savedMobs[id] = v
+                PENDING[id] = v   -- the custom menu reads mob toggles from here
             end
         end
         configStatus = "Loaded '" .. name .. "' (" .. count .. " settings)"
@@ -3791,22 +4345,30 @@ do
         table.insert(defaults[sn], { id, def })
     end
 
+    -- every widget object, by id - setting a slider through its own
+    -- :SetValue is the documented way; UI.SetValue left sliders at 0
+    RS.widgets = {}
+    local function keep(id, w)
+        if w ~= nil then RS.widgets[id] = w end
+        return w
+    end
+
     function RS.toggle(sec, sn, id, label, def, cb)
         reg(sn, id, def)
-        if cb then return sec:Toggle(id, label, def, cb) end
-        return sec:Toggle(id, label, def)
+        if cb then return keep(id, sec:Toggle(id, label, def, cb)) end
+        return keep(id, sec:Toggle(id, label, def))
     end
     function RS.slider(sec, sn, id, label, mn, mx, def)
         reg(sn, id, def)
-        return sec:SliderInt(id, label, mn, mx, def)
+        return keep(id, sec:SliderInt(id, label, mn, mx, def))
     end
     function RS.combo(sec, sn, id, label, items, def)
         reg(sn, id, def)
-        return sec:Combo(id, label, items, def)
+        return keep(id, sec:Combo(id, label, items, def))
     end
     function RS.input(sec, sn, id, label, def)
         reg(sn, id, def)
-        return sec:InputText(id, label, def)
+        return keep(id, sec:InputText(id, label, def))
     end
     function RS.color(sec, sn, name)
         if not seen["col:" .. name] then
@@ -3819,7 +4381,7 @@ do
 
     function RS.resetSection(sn, quiet)
         for _, d in ipairs(defaults[sn] or {}) do
-            pcall(function() UI.SetValue(d[1], d[2]) end)
+            SetV(d[1], d[2])
         end
         for _, name in ipairs(colorsOf[sn] or {}) do
             COL[name] = COL_DEFAULT[name]
@@ -3834,7 +4396,7 @@ do
         for sn, _ in pairs(defaults) do RS.resetSection(sn, true) end
         for _, t in ipairs(mobTypeList) do
             local id = "dw_mt_" .. safeId(t)
-            pcall(function() UI.SetValue(id, true) end)
+            SetV(id, true)
             savedMobs[id] = true
         end
         pcall(function() notify("Everything reset to default (configs on disk untouched)", "Reset", 4) end)
@@ -3886,21 +4448,7 @@ end
 -- RECORDER HOTKEY (so you don't have to open the menu mid-fight)
 -------------------------------
 
-local REC_KEYS = { [0] = 0x75, [1] = 0x76, [2] = 0x77, [3] = 0x78, [4] = 0x79 } -- F6..F10
-task.spawn(function()
-    local wasDown = false
-    while true do
-        local key = REC_KEYS[V("dw_rechotkey", 2) or 2]
-        local down = false
-        if key then pcall(function() down = iskeypressed(key) end) end
-        if down and not wasDown then
-            recorder.armed = true
-            pcall(function() notify("Armed - now press parry and land one", "Parry Recorder", 3) end)
-        end
-        wasDown = down
-        wait(0.05)
-    end
-end)
+-- (parry recorder hotkey removed along with the parry timer)
 
 -- Auto-load the last saved config right away on execute - no need to open
 -- the menu first. The values sit in PENDING, so everything runs with them
@@ -3917,25 +4465,273 @@ do
     end
 end
 
--- Push waiting config values into the menu. Each one is dropped from
--- PENDING once the menu reports it back, after which the menu is in charge.
-local pendingTries = {}
+-- Push waiting config values into the menu.
+-- v14 gave up after 30 tries and then trusted the widget - but Matcha was
+-- refusing UI.SetValue on sliders, so they all sat at 0 and the script
+-- started using 0 (Player Distance 0 = no ESP, Max Drawn 0 = nobody).
+-- Now: push through the widget's own :SetValue too, and if the menu still
+-- won't take it, KEEP using the config value. It only hands over to the
+-- menu once the widget shows the value, or once YOU move that widget.
+local function getUI(id)
+    local ok, v = pcall(function() return UI.GetValue(id) end)
+    if ok then return v end
+    return nil
+end
+
+local function pushValue(id, v)
+    pcall(function() UI.SetValue(id, v) end)
+    local w = RS.widgets and RS.widgets[id]
+    if w then pcall(function() w:SetValue(v) end) end
+end
+
 local function flushPending()
     for id, v in pairs(PENDING) do
-        pcall(function() UI.SetValue(id, v) end)
-        local ok, got = pcall(function() return UI.GetValue(id) end)
-        pendingTries[id] = (pendingTries[id] or 0) + 1
-        -- give up after 30 menu frames so a value the widget won't echo back
-        -- exactly can never lock that setting
-        if (ok and got == v) or pendingTries[id] > 30 then
-            PENDING[id] = nil
-            pendingTries[id] = nil
+        local cur = getUI(id)
+        if cur ~= nil then v = fixValue(v, cur) end
+        local seen = pendingTries[id]
+        if seen == nil then
+            -- first look: push it in and remember what the widget shows now
+            pushValue(id, v)
+            local got = getUI(id)
+            if got == v then
+                PENDING[id] = nil
+            else
+                pendingTries[id] = { shown = got, frames = 0 }
+            end
+        else
+            local got = getUI(id)
+            if got == v then
+                PENDING[id] = nil                  -- the menu finally took it
+                pendingTries[id] = nil
+            elseif got ~= seen.shown then
+                PENDING[id] = nil                  -- you changed it: menu wins
+                pendingTries[id] = nil
+            else
+                seen.frames = seen.frames + 1
+                if seen.frames % 60 == 0 then pushValue(id, v) end   -- retry now and then
+            end
         end
     end
 end
 
+-------------------------------
+-- TELEPORTS
+-- Two ways to get somewhere on Standard Matcha:
+--  TRAVEL  - fly up high, cross over, come down at a believable speed.
+--            One long jump gets you pulled back by the anticheat; steady
+--            flying doesn't. This is why Rice says Mod Office "takes 10-15
+--            mins": it's ~68,000 studs away.
+--  INSTANT - Project Rain's method: put you ON the destination every frame.
+--            For realm/depths teleports that means standing on the game's
+--            own portal part, so the game's own touch sends you through.
+--            Riskier: a long instant jump may get pulled back.
+-- Destinations come from Rain's source, the game's own area markers
+-- (ReplicatedStorage.MarkerWorkspace.AreaMarkers), and spots you save.
+-------------------------------
+do
+    local function childPath(...)
+        local cur = workspace
+        for _, n in ipairs({ ... }) do
+            if not cur then return nil end
+            cur = cur:FindFirstChild(n)
+        end
+        return cur
+    end
+
+    TP.presets = {
+        { name = "Mod Office", pos = Vector3.new(39911.37, 39980.94, 39708.32),
+          part = function() return childPath("ModOffice", "OfficePit") end },
+        { name = "Depths (whirlpool)", pos = Vector3.new(-11771.12, 0, 2849.19),
+          part = function() return childPath("DepthsWhirlpool", "Part") end },
+        { name = "Etrean Luminant (realm exit)", pos = Vector3.new(-528.43, 704.67, -4760.43),
+          part = function() return childPath("ValleyExit", "RealmTeleport") end },
+        { name = "Eastern Luminant (realm exit)", pos = Vector3.new(-2637.46, 721.63, -6722.52),
+          part = function() return childPath("ValleyExit", "RealmTeleport") end },
+        { name = "Trial of One", pos = Vector3.new(-959.79, 147.0, -6659.63),
+          part = function() return childPath("OneEntrance") end },
+    }
+
+    local function myRoot()
+        local live = workspace:FindFirstChild("Live")
+        local me = live and live:FindFirstChild(LocalPlayer.Name)
+        return me and me:FindFirstChild("HumanoidRootPart")
+    end
+
+    local function posOf(inst)
+        local p = nil
+        pcall(function() p = inst.Position end)
+        return p
+    end
+
+    -- every named area the game itself knows about
+    function TP.scanAreas()
+        local out = {}
+        pcall(function()
+            local rs = game:GetService("ReplicatedStorage")
+            local mw = rs:FindFirstChild("MarkerWorkspace")
+            local am = mw and mw:FindFirstChild("AreaMarkers")
+            if not am then return end
+            for _, a in ipairs(am:GetChildren()) do
+                local m = a:FindFirstChild("AreaMarker") or a
+                local p = posOf(m)
+                if p then table.insert(out, { name = tostring(a.Name), pos = p }) end
+            end
+        end)
+        table.sort(out, function(x, y) return x.name < y.name end)
+        TP.areas = out
+        TP.status = (#out > 0) and ("Found " .. #out .. " areas") or "No area markers loaded here"
+        return out
+    end
+
+    -- saved spots (dw_spots.json)
+    local SPOTS_FILE = "dw_spots.json"
+    local function loadSpots()
+        local list = {}
+        pcall(function()
+            if isfile(SPOTS_FILE) then
+                local data = game:GetService("HttpService"):JSONDecode(readfile(SPOTS_FILE))
+                for _, s in ipairs(data) do
+                    if s.name and s.x and s.y and s.z then
+                        table.insert(list, { name = s.name, pos = Vector3.new(s.x, s.y, s.z) })
+                    end
+                end
+            end
+        end)
+        TP.spots = list
+    end
+    local function saveSpots()
+        local raw = {}
+        for _, s in ipairs(TP.spots) do
+            table.insert(raw, { name = s.name, x = s.pos.X, y = s.pos.Y, z = s.pos.Z })
+        end
+        pcall(function() writefile(SPOTS_FILE, game:GetService("HttpService"):JSONEncode(raw)) end)
+    end
+    loadSpots()
+
+    function TP.saveSpot(name)
+        name = tostring(name or ""):gsub("^%s+", ""):gsub("%s+$", "")
+        if name == "" then TP.status = "Type a name for the spot first"; return end
+        local root = myRoot()
+        local p = root and posOf(root)
+        if not p then TP.status = "Can't read your position"; return end
+        for i, s in ipairs(TP.spots) do
+            if s.name == name then table.remove(TP.spots, i) break end
+        end
+        table.insert(TP.spots, { name = name, pos = p })
+        saveSpots()
+        TP.status = "Saved '" .. name .. "'"
+        pcall(function() notify("Saved spot '" .. name .. "'", "Teleports", 3) end)
+    end
+
+    function TP.deleteSpot(name)
+        for i, s in ipairs(TP.spots) do
+            if s.name == name then table.remove(TP.spots, i); saveSpots(); TP.status = "Deleted '" .. name .. "'"; return end
+        end
+    end
+
+    function TP.stop(why)
+        TP.cancel = true
+        TP.status = why or "Stopped"
+    end
+
+    local function fmtTime(s)
+        s = math.max(math.floor(s), 0)
+        if s >= 60 then return string.format("%dm %02ds", math.floor(s / 60), s % 60) end
+        return s .. "s"
+    end
+
+    -- mode "travel" or "instant"; getPart (optional) returns the real
+    -- destination part once that area has loaded in around you
+    function TP.go(name, dest, getPart, mode)
+        -- each run gets its own number; starting a new one retires the old
+        -- one without the old one's cleanup cancelling the new one
+        TP.gen = (TP.gen or 0) + 1
+        local myGen = TP.gen
+        TP.cancel = false
+        TP.running = true
+        TP.status = "Starting: " .. name
+        task.spawn(function()
+            local ok, err = pcall(function()
+                local zero = Vector3.new(0, 0, 0)
+                local cruiseY = nil
+                local holdUntil = nil
+                local sawPart = false
+                local lastT = tick()
+                while not TP.cancel and myGen == TP.gen do
+                    if KB.pressed("dw_tpstopkey", cfg.tpStopKey) then TP.stop("Stopped (key)") break end
+                    local now = tick()
+                    local dt = clamp(now - lastT, 0, 0.1)
+                    lastT = now
+                    local root = myRoot()
+                    if not root then
+                        -- character gone: you probably went through the portal
+                        TP.status = name .. ": character gone (portal worked?)"
+                        if holdUntil then break end
+                        wait(0.3)
+                    else
+                        local pos = posOf(root)
+                        local part = getPart and getPart()
+                        local target = (part and posOf(part)) or dest
+                        if pos and target then
+                            local speed = clamp(tonumber(cfg.tpSpeed) or 120, 20, 600)
+                            local flat = Vector3.new(target.X - pos.X, 0, target.Z - pos.Z)
+                            local flatD = flat.Magnitude
+                            local fullD = (target - pos).Magnitude
+
+                            if mode == "instant" or fullD < 6 then
+                                -- on target: keep putting you there (touches portals).
+                                -- Give a portal time to load in around you first.
+                                holdUntil = holdUntil or (now + (getPart and 8 or 2))
+                                if part and not sawPart then
+                                    sawPart = true
+                                    holdUntil = now + 15
+                                end
+                                local jitter = Vector3.new(math.random() - 0.5, 0, math.random() - 0.5) * 0.02
+                                pcall(function() root.Position = target + Vector3.new(0, part and 1 or 3, 0) + jitter end)
+                                pcall(function() root.AssemblyLinearVelocity = zero end)
+                                TP.status = string.format("%s: holding on target (%s)", name,
+                                    part and "touching portal" or "arrived")
+                                if now > holdUntil then
+                                    TP.status = name .. ": done"
+                                    break
+                                end
+                            else
+                                cruiseY = cruiseY or (math.max(pos.Y, target.Y) + 250)
+                                local vel
+                                if flatD > 8 and pos.Y < cruiseY - 6 then
+                                    vel = Vector3.new(0, speed, 0)                         -- climb
+                                    TP.status = string.format("%s: climbing (%d left)", name, math.floor(cruiseY - pos.Y))
+                                elseif flatD > 8 then
+                                    local u = flat / flatD
+                                    local hold = clamp((cruiseY - pos.Y) * 2, -speed, speed)
+                                    vel = Vector3.new(u.X * speed, hold, u.Z * speed)       -- cruise
+                                    TP.status = string.format("%s: flying %dm, ~%s left", name,
+                                        math.floor(flatD), fmtTime(flatD / speed + (cruiseY - target.Y) / speed))
+                                else
+                                    local dir = (target - pos).Unit
+                                    vel = dir * math.min(speed, fullD * 4)                  -- descend
+                                    TP.status = string.format("%s: landing (%dm)", name, math.floor(fullD))
+                                end
+                                pcall(function() root.AssemblyLinearVelocity = vel end)
+                            end
+                        end
+                    end
+                    task.wait()
+                end
+            end)
+            if not ok then TP.status = "Teleport error: " .. tostring(err); report("teleport", err) end
+            if myGen == TP.gen then
+                TP.running = false
+                TP.cancel = false
+            end
+        end)
+    end
+end
+
 logStep("7 building UI")
-UI.AddTab("Deepwoken Script", function(tab)
+-- The old Matcha tab, kept only for reference - it's no longer shown.
+-- Everything lives in the custom menu below instead.
+local function oldMatchaTab(tab)
     logStep("8 UI first frame start", true)
 
     local T, S, C, I, P = RS.toggle, RS.slider, RS.combo, RS.input, RS.color
@@ -3951,11 +4747,16 @@ UI.AddTab("Deepwoken Script", function(tab)
     T(esp, "ESP", "dw_showdist", "Show Distance", true)
     T(esp, "ESP", "dw_showuser", "Show @username", true)
     T(esp, "ESP", "dw_hpcolorname", "Color Name by HP (when hurt)", false)
+    T(esp, "ESP", "dw_cyber", "Cyberpunk Theme", true)
+    T(esp, "ESP", "dw_boxes", "Outline Box (theme on)", false)
+    T(esp, "ESP", "dw_showhpnum", "Show HP Numbers (e.g. 643/700)", false)
+    T(esp, "ESP", "dw_hppctonly", "HP % Only (no bar, no numbers)", false)
+    esp:Tip("Turn OFF Matcha's own ESP (Visuals tab) or both draw on top of each other")
     S(esp, "ESP", "dw_bardist", "HP Bar Radius", 25, 1000, 200)
     S(esp, "ESP", "dw_maxdraw", "Max ESP Drawn (closest)", 5, 80, 30)
-    T(esp, "ESP", "dw_smooth", "Smooth ESP (laggy servers)", true)
+    T(esp, "ESP", "dw_smooth2", "Smooth ESP (adds a little delay)", false)
     S(esp, "ESP", "dw_smoothamt", "Smoothing Speed", 3, 30, 12)
-    esp:Tip("Lower = smoother but trails behind more. Uses velocity prediction now")
+    esp:Tip("Leave OFF for labels that stick to targets. Higher speed = less delay")
     S(esp, "ESP", "dw_camgap", "Use Camera If Body Is >", 20, 500, 80)
     esp:Tip("If distances look wrong, lower this")
     S(esp, "ESP", "dw_refresh", "ESP Data Refresh (ms)", 100, 1000, 250)
@@ -4080,70 +4881,127 @@ UI.AddTab("Deepwoken Script", function(tab)
     alerts:Text(#staffList > 0 and ("STAFF HERE: " .. #staffList) or "No known staff right now")
     alerts:Button("Reset Alerts Section", function() RS.resetSection("Nearby & Alerts") end)
 
-    local pr = tab:Section("Parry Timer", "Right")
-    T(pr, "Parry Timer", "dw_parry", "Parry Cooldown Bar", false)
-    P(pr, "Parry Timer", "parry")
-    C(pr, "Parry Timer", "dw_parrykey", "Parry Key", { "F", "Right Mouse", "Q", "E", "R", "G" }, 0)
-    S(pr, "Parry Timer", "dw_parrywin", "Parry Window (x0.01s)", 5, 100, 25)
-    S(pr, "Parry Timer", "dw_parrycd", "Cooldown (x0.01s)", 10, 400, 100)
-    pr:Tip("Tune these to match your weapon")
-    S(pr, "Parry Timer", "dw_parryy", "Bar Height on Screen (%)", 5, 90, 25)
-    T(pr, "Parry Timer", "dw_parryreseton", "Reset Bar On Landed Parry", true)
-    I(pr, "Parry Timer", "dw_parryreset", "Reset on (effect name)", "CLIENT_SOUND_4954186776")
-    pr:Tip("Name(s) of the effect a landed parry spawns, comma separated")
-    C(pr, "Parry Timer", "dw_rechotkey", "Recorder Hotkey", { "F6", "F7", "F8", "F9", "F10" }, 2)
-    pr:Tip("Press it in-game, then land a parry. Writes dw_parrylog.txt")
-    pr:Text(recorder.armed and "Recorder: ARMED - press parry" or (recorder.active and "Recorder: recording..." or "Recorder: idle"))
-    pr:Button("Reset Parry Section", function() RS.resetSection("Parry Timer") end)
-
-    local sp = tab:Section("Movement", "Right")
-    T(sp, "Movement", "dw_speed", "Speed Spoof", false)
-    C(sp, "Movement", "dw_speedmode", "Mode", { "Push + wall guard (best)", "Velocity (ignores slows)", "PassiveAgility (memory)" }, 0)
     -- A key you can set to anything: a text box holding its name + "Set"
     local function keyRow(sec, sn, id, label)
         I(sec, sn, id, label, "")
-        sec:Button("Set: " .. label, function() KB.capture(id) end)
+        sec:Button("Set " .. label, function() KB.capture(id) end)
     end
 
-    -- ---- SPEED (Push / Velocity modes) ----
-    S(sp, "Movement", "dw_speedmult", "Speed (11 = 1.1x, 50 = 5x)", 11, 50, 20)
-    sp:Text(string.format("= %.1fx your normal speed", clamp((cfg.speedMult or 20) / 10, 1.1, 5)))
-    sp:Tip("Speed is for Push and Velocity modes only")
-    S(sp, "Movement", "dw_spdstep", "Speed Step Per Press (1 = 0.1x)", 1, 10, 1)
-    keyRow(sp, "Movement", "dw_spdupkey", "Speed Up Key")
-    keyRow(sp, "Movement", "dw_spddownkey", "Speed Down Key")
-
-    -- ---- PASSIVE AGILITY (PassiveAgility mode) ----
-    sp:Text("-- PassiveAgility --")
-    S(sp, "Movement", "dw_agiamt", "Agility Amount", 1, 1000, 10)
-    I(sp, "Movement", "dw_agicustom", "Custom Amount (1-100000)", "")
-    sp:Tip("Type any amount here to go past 1000. Clear it to use the slider again")
-    sp:Button("Clear Custom (use slider)", function()
+    local sp = tab:Section("Agility Spoof", "Right")
+    T(sp, "Agility Spoof", "dw_speed", "Agility Spoof", false)
+    keyRow(sp, "Agility Spoof", "dw_speedkeyname", "Agility Toggle Key")
+    sp:Text("Status: " .. SPD.status)
+    S(sp, "Agility Spoof", "dw_agiamt", "Amount (slider)", 1, 1000, 10)
+    I(sp, "Agility Spoof", "dw_agicustom", "Custom Amount (up to 100000)", "")
+    sp:Button("Clear Custom - use slider", function()
         cfg.agiCustom = ""
-        pcall(function() UI.SetValue("dw_agicustom", "") end)
+        SetV("dw_agicustom", "")
     end)
     do
         local amt = SPD.agiAmount and SPD.agiAmount() or 10
         local src = tonumber(cfg.agiCustom) and "custom" or "slider"
-        sp:Text(string.format("= amount %d (%s)  ->  agility %g", amt, src, 8 + (amt / 10) * 2))
+        sp:Text(string.format("Using amount %d (%s) = agility %g", amt, src, 8 + (amt / 10) * 2))
     end
-    S(sp, "Movement", "dw_agistep", "Agility Step Per Press", 1, 1000, 5)
-    keyRow(sp, "Movement", "dw_agiupkey", "Agility Up Key")
-    keyRow(sp, "Movement", "dw_agidownkey", "Agility Down Key")
-    sp:Tip("Each press adds/removes the step. Agility = 8 + amount/5 (Rain's formula)")
-    keyRow(sp, "Movement", "dw_speedkeyname", "Speed Toggle Key")
-    sp:Tip("Any key. Leave it empty to use the old quick-pick below")
-    C(sp, "Movement", "dw_speedkey", "Toggle Key (quick pick)", { "None", "X", "C", "V", "B", "Z" }, 0)
-    sp:Tip("Push multiplies the game's own speed, so stuns/parry/jump slows still hit you")
-    sp:Tip("Keep it 1.3x-2x: higher = more server pushback (feels laggy)")
-    sp:Text("Status: " .. SPD.status)
-    T(sp, "Movement", "dw_stunmove", "Move While Stunned / Endlag", false)
-    S(sp, "Movement", "dw_stunspeed", "Stunned Move Speed (studs/s)", 4, 30, 14)
-    keyRow(sp, "Movement", "dw_stunkeyname", "Stunned Move Toggle Key")
-    C(sp, "Movement", "dw_stunkey", "Stunned Move Key (quick pick)", { "None", "N", "M", "J", "K", "L" }, 0)
-    sp:Tip("Only moves you - can't make you attack/parry sooner")
-    sp:Text("Stunned move: " .. SPD.stunStatus())
-    sp:Button("Reset Movement Section", function() RS.resetSection("Movement") end)
+    S(sp, "Agility Spoof", "dw_agistep", "Step Per Key Press", 1, 1000, 5)
+    keyRow(sp, "Agility Spoof", "dw_agiupkey", "Agility Up Key")
+    keyRow(sp, "Agility Spoof", "dw_agidownkey", "Agility Down Key")
+    sp:Button("Reset Agility Spoof", function() RS.resetSection("Agility Spoof") end)
+
+    local sm = tab:Section("Move While Stunned", "Right")
+    T(sm, "Move While Stunned", "dw_stunmove", "Move While Stunned / Endlag", false)
+    keyRow(sm, "Move While Stunned", "dw_stunkeyname", "Stun Toggle Key")
+    S(sm, "Move While Stunned", "dw_stunspeed", "Speed (studs/s)", 4, 30, 14)
+    sm:Text("Status: " .. SPD.stunStatus())
+
+    local nf = tab:Section("No Fall Damage", "Right")
+    T(nf, "No Fall Damage", "dw_nofall", "No Fall Damage", false)
+    keyRow(nf, "No Fall Damage", "dw_nofallkey", "No Fall Toggle Key")
+    S(nf, "No Fall Damage", "dw_nofallsink", "Glide Down Speed (studs/s)", 5, 120, 30)
+    nf:Tip("Drops become a slow glide, like flying down - the game never sees a fall")
+    nf:Text("Status: " .. (SPD.fallStatus or "Off"))
+    nf:Button("Fall Debug: save game's fall code", function() SPD.dumpFallCode() end)
+    nf:Tip("Still getting hurt? Press this, then send me dw_fallcode.txt")
+
+    -- ---- TELEPORTS ----
+    local tp = tab:Section("Teleports", "Right")
+    tp:Text("Teleport: " .. TP.status)
+    S(tp, "Teleports", "dw_tpspeed", "Travel Speed (studs/s)", 20, 600, 120)
+    tp:Tip("Faster = sooner but likelier to be pulled back. 120 is safe-ish")
+    keyRow(tp, "Teleports", "dw_tpstopkey", "Stop Teleport Key")
+    tp:Button("STOP TELEPORT", function() TP.stop("Stopped") end)
+    tp:Text("-- Travel (flies there, slow but safe) --")
+    for _, p in ipairs(TP.presets) do
+        tp:Button("Travel: " .. p.name, function() TP.go(p.name, p.pos, p.part, "travel") end)
+    end
+    tp:Text("-- Instant (Rain method, may get pulled back) --")
+    for _, p in ipairs(TP.presets) do
+        tp:Button("Instant: " .. p.name, function() TP.go(p.name, p.pos, p.part, "instant") end)
+    end
+
+    local ar = tab:Section("Areas & Saved Spots", "Right")
+    ar:Button("Scan Game Areas", function() TP.scanAreas() end)
+    ar:Tip("Lists every named area the game has (towns, bosses, Boatman's Watch...)")
+    do
+        local names = {}
+        for _, a in ipairs(TP.areas) do table.insert(names, a.name) end
+        if #names == 0 then names = { "(press Scan Game Areas)" } end
+        local cb = ar:Combo("dw_tparea", "Area", names, 0)
+        pcall(function()
+            local items = cb:GetItems()
+            if type(items) == "table" and table.concat(items, "\n") ~= table.concat(names, "\n") then
+                cb:Clear()
+                for _, n in ipairs(names) do cb:Add(n) end
+            end
+        end)
+        pcall(function() TP.pickArea = cb:GetText() end)
+    end
+    local function pickedArea()
+        for _, a in ipairs(TP.areas) do if a.name == TP.pickArea then return a end end
+        return nil
+    end
+    ar:Button("Travel to Area", function()
+        local a = pickedArea()
+        if a then TP.go(a.name, a.pos, nil, "travel") else TP.status = "Scan and pick an area first" end
+    end)
+    ar:Button("Instant to Area", function()
+        local a = pickedArea()
+        if a then TP.go(a.name, a.pos, nil, "instant") else TP.status = "Scan and pick an area first" end
+    end)
+
+    ar:Text("-- Your saved spots --")
+    ar:InputText("dw_spotname", "Spot Name", "")
+    ar:Button("Save Spot Here", function() TP.saveSpot(V("dw_spotname", "")) end)
+    ar:Tip("Stand somewhere (Primadon, Hive, Ferryman...), name it, save it")
+    do
+        local names = {}
+        for _, s in ipairs(TP.spots) do table.insert(names, s.name) end
+        if #names == 0 then names = { "(no saved spots)" } end
+        local cb = ar:Combo("dw_tpspot", "Saved Spot", names, 0)
+        pcall(function()
+            local items = cb:GetItems()
+            if type(items) == "table" and table.concat(items, "\n") ~= table.concat(names, "\n") then
+                cb:Clear()
+                for _, n in ipairs(names) do cb:Add(n) end
+            end
+        end)
+        pcall(function() TP.pickSpot = cb:GetText() end)
+    end
+    local function pickedSpot()
+        for _, s in ipairs(TP.spots) do if s.name == TP.pickSpot then return s end end
+        return nil
+    end
+    ar:Button("Travel to Spot", function()
+        local s = pickedSpot()
+        if s then TP.go(s.name, s.pos, nil, "travel") else TP.status = "Save or pick a spot first" end
+    end)
+    ar:Button("Instant to Spot", function()
+        local s = pickedSpot()
+        if s then TP.go(s.name, s.pos, nil, "instant") else TP.status = "Save or pick a spot first" end
+    end)
+    ar:Button("Delete Spot", function()
+        local s = pickedSpot()
+        if s then TP.deleteSpot(s.name) end
+    end)
 
     local rc = tab:Section("Rice", "Right")
     rc:Text("Rice: " .. RICE.state)
@@ -4212,6 +5070,681 @@ UI.AddTab("Deepwoken Script", function(tab)
 
     -- last, so this frame's widgets already exist
     flushPending()
+end
+
+-------------------------------
+-- CUSTOM MENU  -  DEMOLISHER //DW
+-- Its own window, styled after the DEMOLISHER //V2 app: yellow title
+-- block, numbered sidebar, big TITLE_ headers, cyan section headings.
+-- Drag it by the header. END (or your own key - INSERT is Matcha's) hides/shows it.
+-- Every drawing is reused frame to frame and only written when something
+-- changed, so an open menu stays light.
+-------------------------------
+local GUI = { open = true, page = 1, x = 120, y = 90, w = 860, h = 600, scroll = {}, sel = {}, buf = "" }
+do
+    local C = {
+        bg = Color3.fromRGB(9, 13, 22), panel = Color3.fromRGB(14, 20, 33), side = Color3.fromRGB(6, 9, 16),
+        line = Color3.fromRGB(34, 50, 72), yellow = Color3.fromRGB(252, 238, 10), cyan = Color3.fromRGB(0, 229, 255),
+        pink = Color3.fromRGB(255, 42, 109), text = Color3.fromRGB(222, 230, 240), dim = Color3.fromRGB(112, 130, 152),
+        black = Color3.fromRGB(0, 0, 0), track = Color3.fromRGB(24, 36, 54),
+    }
+    local P, N = { sq = {}, tx = {} }, { sq = 0, tx = 0 }
+    local CW = 7.8   -- monospace character width at size 13
+
+    local function get(kind)
+        N[kind] = N[kind] + 1
+        local o = P[kind][N[kind]]
+        if not o then
+            local d
+            if kind == "sq" then
+                d = Drawing.new("Square")
+            else
+                d = Drawing.new("Text")
+                pcall(function() d.Outline = false end)
+                if FONT then pcall(function() d.Font = FONT end) end
+            end
+            o = { d = d, c = {} }
+            P[kind][N[kind]] = o
+        end
+        return o
+    end
+    local function sp(o, k, v)
+        if o.c[k] ~= v then
+            o.c[k] = v
+            pcall(function() o.d[k] = v end)
+        end
+    end
+    local function v2(o, k, x, y)
+        x, y = math.floor(x + 0.5), math.floor(y + 0.5)
+        if o.c[k .. "X"] ~= x or o.c[k .. "Y"] ~= y then
+            o.c[k .. "X"], o.c[k .. "Y"] = x, y
+            pcall(function() o.d[k] = Vector2.new(x, y) end)
+        end
+    end
+    local function box(x, y, w, h, col, filled, alpha, z)
+        local o = get("sq")
+        v2(o, "Position", x, y)
+        v2(o, "Size", math.max(w, 1), math.max(h, 1))
+        sp(o, "Color", col)
+        sp(o, "Filled", filled ~= false)
+        sp(o, "Transparency", alpha or 1)
+        sp(o, "ZIndex", z or 60)
+        sp(o, "Visible", true)
+    end
+    local function text(x, y, s, col, size, center)
+        local o = get("tx")
+        sp(o, "Text", tostring(s))
+        sp(o, "Color", col or C.text)
+        sp(o, "Size", size or 13)
+        sp(o, "FontSize", size or 13)
+        sp(o, "Center", center == true)
+        sp(o, "ZIndex", 62)
+        v2(o, "Position", x, y)
+        sp(o, "Visible", true)
+    end
+    local function finish()
+        for kind, list in pairs(P) do
+            for i = N[kind] + 1, #list do sp(list[i], "Visible", false) end
+            N[kind] = 0
+        end
+    end
+
+    -- ---- input ----
+    local mouse = nil
+    pcall(function() mouse = LocalPlayer:GetMouse() end)
+    local mx, my, down, click, wasDown = 0, 0, false, false, false
+    local dragging, dragWin, dragBar = nil, nil, nil
+    local function readInput()
+        local x, y = 0, 0
+        pcall(function() x, y = mouse.X, mouse.Y end)
+        mx, my = x, y
+        local d = false
+        pcall(function() d = ismouse1pressed() end)
+        click = d and not wasDown
+        down = d
+        wasDown = d
+    end
+    local function over(x, y, w, h) return mx >= x and mx <= x + w and my >= y and my <= y + h end
+
+    -- ---- typing into a text box ----
+    local CHARS = {}
+    for c = 0x41, 0x5A do CHARS[c] = { string.lower(string.char(c)), string.char(c) } end
+    local SHIFTED = ")!@#$%^&*("
+    for i = 0, 9 do CHARS[0x30 + i] = { tostring(i), string.sub(SHIFTED, i + 1, i + 1) } end
+    for i = 0, 9 do CHARS[0x60 + i] = { tostring(i), tostring(i) } end
+    local more = { [0x20] = { " ", " " }, [0xBE] = { ".", ">" }, [0xBC] = { ",", "<" }, [0xBD] = { "-", "_" },
+        [0xBB] = { "=", "+" }, [0xBF] = { "/", "?" }, [0xBA] = { ";", ":" }, [0xDB] = { "[", "{" },
+        [0xDD] = { "]", "}" }, [0xDE] = { "'", "\"" }, [0xC0] = { "`", "~" }, [0x6E] = { ".", "." }, [0x6D] = { "-", "-" } }
+    for k, v in pairs(more) do CHARS[k] = v end
+    local held, bsAt = {}, 0
+
+    local function commit()
+        if GUI.focus then
+            local val = GUI.buf
+            if GUI.numeric and val ~= "" and not tonumber(val) then val = "" end
+            SetV(GUI.focus, val)
+        end
+        GUI.focus = nil
+        if KB.capturing == "typing" then KB.capturing = nil end
+    end
+    local function focusOn(id, cur, numeric)
+        commit()
+        GUI.focus, GUI.buf, GUI.numeric = id, cur, numeric
+        KB.capturing = "typing"   -- your hotkeys don't fire while you type
+    end
+    local function typeKeys()
+        local shift = false
+        pcall(function() shift = iskeypressed(0x10) end)
+        for vk, pair in pairs(CHARS) do
+            local d = false
+            pcall(function() d = iskeypressed(vk) end)
+            if d and not held[vk] then
+                local ch = shift and pair[2] or pair[1]
+                if not GUI.numeric or string.find(ch, "^[%d%.%-]$") then GUI.buf = GUI.buf .. ch end
+            end
+            held[vk] = d
+        end
+        local bs = false
+        pcall(function() bs = iskeypressed(0x08) end)
+        if bs and (not held[0x08] or tick() > bsAt) then
+            GUI.buf = string.sub(GUI.buf, 1, -2)
+            bsAt = tick() + (held[0x08] and 0.04 or 0.4)
+        end
+        held[0x08] = bs
+        local enter, esc = false, false
+        pcall(function() enter = iskeypressed(0x0D) end)
+        pcall(function() esc = iskeypressed(0x1B) end)
+        if enter and not held[0x0D] then commit() end
+        if esc and not held[0x1B] then GUI.focus = nil; KB.capturing = nil end
+        held[0x0D], held[0x1B] = enter, esc
+    end
+
+    -- ---- widgets (laid out top to bottom in the content area) ----
+    local L = { x = 0, y = 0, w = 0, top = 0, bottom = 0 }
+    local function vis(h) return L.y >= L.top and L.y + h <= L.bottom end
+    local function store(id, def)
+        local v = PENDING[id]
+        if v == nil then return def end
+        return v
+    end
+
+    local W = {}
+    function W.section(t)
+        L.y = L.y + 6
+        if vis(24) then
+            text(L.x, L.y, string.upper(t), C.cyan, 13)
+            box(L.x, L.y + 19, L.w, 1, C.line, true)
+        end
+        L.y = L.y + 28
+    end
+    function W.label(t, col)
+        if vis(18) then text(L.x, L.y, t, col or C.dim, 12) end
+        L.y = L.y + 18
+    end
+    function W.toggle(id, label, def)
+        local on = store(id, def) == true
+        if vis(24) then
+            box(L.x, L.y + 3, 16, 16, on and C.yellow or C.track, true)
+            if not on then box(L.x, L.y + 3, 16, 16, C.line, false) end
+            text(L.x + 26, L.y + 4, label, on and C.text or C.dim, 13)
+            if click and over(L.x, L.y, L.w, 22) then
+                click = false
+                on = not on
+                SetV(id, on)
+            end
+        end
+        L.y = L.y + 26
+        return on
+    end
+    function W.slider(id, label, lo, hi, def, step, suffix)
+        step = step or 1
+        local v = tonumber(store(id, def)) or def
+        if vis(40) then
+            text(L.x, L.y, label, C.text, 13)
+            local s = tostring(v) .. (suffix or "")
+            text(L.x + L.w - #s * CW, L.y, s, C.yellow, 13)
+            local tx, ty, tw = L.x, L.y + 22, L.w
+            local f = clamp((v - lo) / math.max(hi - lo, 1), 0, 1)
+            box(tx, ty, tw, 6, C.track, true)
+            box(tx, ty, tw * f, 6, C.cyan, true)
+            box(tx + tw * f - 3, ty - 4, 6, 14, C.yellow, true)
+            if click and over(tx - 6, ty - 10, tw + 12, 26) then dragging = id; click = false end
+            if dragging == id then
+                if down then
+                    local nv = lo + clamp((mx - tx) / tw, 0, 1) * (hi - lo)
+                    nv = clamp(math.floor(nv / step + 0.5) * step, lo, hi)
+                    if nv ~= v then SetV(id, nv) end
+                else
+                    dragging = nil
+                end
+            end
+        end
+        L.y = L.y + 42
+    end
+    -- a row of buttons sharing the width: { {"Label", fn, primary}, ... }
+    function W.buttons(list)
+        if vis(28) then
+            local gap = 8
+            local bw = (L.w - gap * (#list - 1)) / #list
+            for i, b in ipairs(list) do
+                local bx = L.x + (i - 1) * (bw + gap)
+                local hov = over(bx, L.y, bw, 26)
+                if b[3] then
+                    box(bx, L.y, bw, 26, hov and C.text or C.yellow, true)
+                else
+                    box(bx, L.y, bw, 26, hov and C.track or C.panel, true)
+                    box(bx, L.y, bw, 26, hov and C.cyan or C.line, false)
+                end
+                text(bx + bw / 2, L.y + 6, b[1], b[3] and C.black or C.text, 13, true)
+                if click and hov then click = false; pcall(b[2]) end
+            end
+        end
+        L.y = L.y + 34
+    end
+    function W.button(label, fn, primary) W.buttons({ { label, fn, primary } }) end
+    function W.key(id, label, def)
+        local k = tostring(store(id, def or "") or "")
+        if vis(26) then
+            text(L.x, L.y + 5, label, C.text, 13)
+            local bw = 150
+            local bx = L.x + L.w - bw
+            local waiting = KB.capturing == id
+            local hov = over(bx, L.y, bw, 24)
+            box(bx, L.y, bw, 24, C.panel, true)
+            box(bx, L.y, bw, 24, waiting and C.yellow or (hov and C.cyan or C.line), false)
+            text(bx + bw / 2, L.y + 5, waiting and "PRESS A KEY" or (k ~= "" and k or "NONE"),
+                waiting and C.yellow or C.cyan, 13, true)
+            -- small x to clear it
+            local cx = bx - 30
+            local hovx = over(cx, L.y, 24, 24)
+            box(cx, L.y, 24, 24, hovx and C.pink or C.panel, true)
+            text(cx + 12, L.y + 5, "x", hovx and C.black or C.dim, 13, true)
+            if click and hov then click = false; KB.capture(id) end
+            if click and hovx then click = false; SetV(id, "") end
+        end
+        L.y = L.y + 30
+    end
+    function W.input(id, label, def, numeric)
+        local cur = tostring(store(id, def) or "")
+        local focused = GUI.focus == id
+        if vis(46) then
+            text(L.x, L.y, label, C.text, 13)
+            local by = L.y + 19
+            local hov = over(L.x, by, L.w, 24)
+            box(L.x, by, L.w, 24, C.panel, true)
+            box(L.x, by, L.w, 24, focused and C.yellow or (hov and C.cyan or C.line), false)
+            local shown = focused and (GUI.buf .. ((math.floor(tick() * 2) % 2 == 0) and "_" or " ")) or cur
+            local maxc = math.floor((L.w - 16) / CW)
+            if #shown > maxc then shown = string.sub(shown, -maxc) end
+            if shown == "" then shown = "click to type" end
+            text(L.x + 8, by + 5, shown, focused and C.yellow or (cur == "" and C.dim or C.cyan), 13)
+            if focused then GUI.focusRect = { L.x, by, L.w, 24 } end
+            if click and hov and not focused then click = false; focusOn(id, cur, numeric) end
+        end
+        L.y = L.y + 48
+    end
+    -- "< item >" picker; returns the picked index
+    function W.pick(key, label, items)
+        local n = #items
+        local i = clamp(GUI.sel[key] or 1, 1, math.max(n, 1))
+        if vis(26) then
+            text(L.x, L.y + 5, label, C.text, 13)
+            local bw = math.min(L.w * 0.62, 340)
+            local bx = L.x + L.w - bw
+            box(bx, L.y, bw, 24, C.panel, true)
+            box(bx, L.y, bw, 24, C.line, false)
+            local hl, hr = over(bx, L.y, 26, 24), over(bx + bw - 26, L.y, 26, 24)
+            text(bx + 13, L.y + 5, "<", hl and C.yellow or C.cyan, 13, true)
+            text(bx + bw - 13, L.y + 5, ">", hr and C.yellow or C.cyan, 13, true)
+            local s = (n > 0) and tostring(items[i]) or "-"
+            local maxc = math.floor((bw - 60) / CW)
+            if #s > maxc then s = string.sub(s, 1, maxc - 1) .. "~" end
+            text(bx + bw / 2, L.y + 5, s, C.text, 13, true)
+            if n > 0 and click and hl then click = false; i = (i - 2) % n + 1 end
+            if n > 0 and click and hr then click = false; i = i % n + 1 end
+        end
+        GUI.sel[key] = i
+        L.y = L.y + 30
+        return i
+    end
+    GUI.W = W
+
+    -- ---- pages ----
+    local PAGES = {}
+    local function page(name, fn) table.insert(PAGES, { name = name, fn = fn }) end
+
+    page("ESP", function()
+        W.section("Players & mobs")
+        W.toggle("dw_esp", "Player ESP", false)
+        W.slider("dw_playerdist", "Player Distance", 100, 20000, 5000, 100, "m")
+        W.toggle("dw_mobesp", "Mob ESP", false)
+        W.slider("dw_mobdist", "Mob Distance", 50, 5000, 1000, 50, "m")
+        W.slider("dw_maxdraw", "Max Drawn (closest)", 5, 80, 30)
+        W.section("Labels")
+        W.toggle("dw_showhp", "Show HP (bar + %)", true)
+        W.toggle("dw_showhpnum", "Show HP numbers (643/700)", false)
+        W.toggle("dw_hppctonly", "HP % only (no bar, no numbers)", false)
+        W.toggle("dw_showdist", "Show distance", true)
+        W.toggle("dw_showuser", "Show @username", true)
+        W.toggle("dw_hpcolorname", "Colour name by HP when hurt", false)
+        W.slider("dw_bardist", "HP Bar Radius", 25, 1000, 200, 25, "m")
+        W.section("Look")
+        W.toggle("dw_cyber", "Cyberpunk theme", true)
+        W.toggle("dw_boxes", "Outline box", false)
+        W.toggle("dw_status", "Status line (top)", true)
+        W.section("Tracking")
+        W.toggle("dw_smooth2", "Smooth ESP (adds a little delay)", false)
+        W.slider("dw_smoothamt", "Smoothing Speed", 3, 30, 12)
+        W.slider("dw_camgap", "Use camera if body is further than", 20, 500, 80, 10, "m")
+        W.slider("dw_refresh", "Data refresh", 100, 1000, 250, 50, "ms")
+        W.button("Refresh Mob / Player ESP", function() RS.refreshEsp() end)
+        W.label("Turn OFF Matcha's own ESP (Visuals tab) or both draw at once")
+    end)
+
+    page("OBJECTS", function()
+        W.section("Objects")
+        W.toggle("dw_artifact", "Artifact ESP", false)
+        W.slider("dw_artdist", "Artifact Distance", 100, 20000, 20000, 100, "m")
+        W.toggle("dw_artalert", "Notify when an artifact spawns", true)
+        W.toggle("dw_chest", "Chest ESP", false)
+        W.toggle("dw_npcesp", "NPC ESP (shops / quests)", false)
+        W.toggle("dw_miscobj", "Campfires / bags / meteors", false)
+        W.toggle("dw_ingred", "Ingredient ESP", false)
+        W.slider("dw_objdist", "Object Distance", 100, 5000, 1500, 50, "m")
+        W.button("Refresh Object ESP", function() RS.refreshObjects() end)
+        W.section("Custom ESP")
+        W.toggle("dw_customesp", "Custom ESP (names below)", false)
+        W.input("dw_customnames", "Model names (comma separated)", "")
+        W.buttons({ { "Close Scan", function() closeScan() end }, { "Scan Nearby", function() scanNearby() end } })
+        W.label("Scan: " .. tostring(scanStatus))
+    end)
+
+    page("MOB FILTER", function()
+        W.section("Mobs near you")
+        W.buttons({
+            { "Show all", function()
+                for _, t in ipairs(mobTypeList) do local id = "dw_mt_" .. safeId(t); SetV(id, true); savedMobs[id] = true end
+            end },
+            { "Hide all", function()
+                for _, t in ipairs(mobTypeList) do local id = "dw_mt_" .. safeId(t); SetV(id, false); savedMobs[id] = false end
+            end },
+            { "Refresh", function() RS.refreshEsp() end },
+        })
+        if #mobTypeList == 0 then W.label("No mobs loaded - turn on Mob ESP first") end
+        for _, t in ipairs(mobTypeList) do
+            local id = "dw_mt_" .. safeId(t)
+            local on = W.toggle(id, t .. "  (" .. tostring(mobTypeCounts[t] or 0) .. ")", true)
+            savedMobs[id] = on
+        end
+    end)
+
+    page("ALERTS", function()
+        W.section("Staff")
+        W.toggle("dw_mods", "Mod checker", true)
+        W.toggle("dw_bigwarn", "Big staff warning (centre)", true)
+        W.button("Re-check staff now", function() RS.recheckStaff() end)
+        W.label(#staffList > 0 and ("STAFF HERE: " .. #staffList) or "No known staff right now",
+            #staffList > 0 and C.pink or C.dim)
+        W.section("Nearby")
+        W.toggle("dw_nearby", "Nearby players box", false)
+        W.toggle("dw_prox", "Proximity notify", false)
+        W.slider("dw_proxdist", "Nearby Distance", 100, 20000, 1000, 100, "m")
+        W.section("Friends HP export (for Screen Macro)")
+        W.toggle("dw_exphp", "Export friends HP (dw_party.txt)", false)
+        W.input("dw_friends", "Only these names (comma separated, empty = all)", "")
+        W.slider("dw_exphpms", "Export every", 100, 2000, 250, 50, "ms")
+    end)
+
+    page("AGILITY", function()
+        W.section("Agility spoof")
+        W.toggle("dw_speed", "Agility spoof", false)
+        W.key("dw_speedkeyname", "Toggle key")
+        W.label("Status: " .. tostring(SPD.status), C.cyan)
+        W.section("Amount")
+        W.slider("dw_agiamt", "Amount (slider)", 1, 1000, 10)
+        W.input("dw_agicustom", "Custom amount (up to 100000, overrides slider)", "", true)
+        local amt = SPD.agiAmount and SPD.agiAmount() or 10
+        W.label(string.format("Using amount %d = agility %g", amt, 8 + (amt / 10) * 2), C.yellow)
+        W.button("Clear custom - use slider", function() SetV("dw_agicustom", ""); cfg.agiCustom = "" end)
+        W.section("Step keys")
+        W.slider("dw_agistep", "Step per key press", 1, 1000, 5)
+        W.key("dw_agiupkey", "Up key")
+        W.key("dw_agidownkey", "Down key")
+    end)
+
+    page("MOVEMENT", function()
+        W.section("No fall damage")
+        W.toggle("dw_nofall", "No fall damage", false)
+        W.key("dw_nofallkey", "Toggle key")
+        local modes = { "Glide (slow fall)", "Speed cap (the old one)", "Fall reset (normal falling)" }
+        GUI.sel.nfmode = (tonumber(store("dw_nofallmode", 2)) or 2) + 1
+        local m = W.pick("nfmode", "Mode", modes)
+        if m - 1 ~= (tonumber(store("dw_nofallmode", 2)) or 2) then SetV("dw_nofallmode", m - 1) end
+        W.slider("dw_nofallbreak", "Reset the fall every", 4, 30, 12, 1, " studs")
+        W.label("Every mode does this: the game only hurts falls over ~20 studs")
+        if m == 1 then
+            W.slider("dw_nofallsink", "Glide down speed", 5, 120, 30, 1, "/s")
+        elseif m == 2 then
+            W.slider("dw_nofallcap2", "Max fall speed", 5, 200, 40, 1, "/s")
+        end
+        if m ~= 3 then
+            W.slider("dw_nofallcatch", "Catch drops faster than", 8, 60, 20, 1, "/s")
+            W.label("Higher = small jumps / dodges left alone")
+            W.slider("dw_nofalldelay2", "Extra wait before catching", 0, 500, 0, 25, "ms")
+        end
+        W.label("Flight (F1) isn't fought any more", C.dim)
+        W.label("Status: " .. tostring(SPD.fallStatus), C.cyan)
+        W.button("Fall debug: save game's fall code", function() SPD.dumpFallCode() end)
+        W.section("Boat speed")
+        W.toggle("dw_boat", "Boat speed", false)
+        W.key("dw_boatkey", "Toggle key")
+        W.slider("dw_boatmult", "Speed (x0.1)", 10, 60, 20, 1, "")
+        W.label("20 = 2x as fast. Sail first - it only adds to the boat's own speed")
+        W.label("Status: " .. tostring(BOAT.status), C.cyan)
+        W.button("Boat scan (if it doesn't work, send dw_boat.txt)", function() BOAT.scan() end)
+        W.section("Move while stunned")
+        W.toggle("dw_stunmove", "Move while stunned / endlag", false)
+        W.key("dw_stunkeyname", "Toggle key")
+        W.slider("dw_stunspeed", "Speed", 4, 30, 14, 1, "/s")
+        W.label("Status: " .. tostring(SPD.stunStatus and SPD.stunStatus() or "Off"), C.cyan)
+    end)
+
+    page("TELEPORTS", function()
+        W.label("Teleport: " .. tostring(TP.status), C.yellow)
+        W.button("STOP TELEPORT", function() TP.stop("Stopped") end, true)
+        W.slider("dw_tpspeed", "Travel speed", 20, 600, 120, 10, "/s")
+        W.key("dw_tpstopkey", "Stop key")
+        W.section("Places")
+        for _, p in ipairs(TP.presets) do
+            W.buttons({
+                { "Travel: " .. p.name, function() TP.go(p.name, p.pos, p.part, "travel") end },
+                { "Instant", function() TP.go(p.name, p.pos, p.part, "instant") end },
+            })
+        end
+        W.section("Game areas")
+        W.button("Scan game areas", function() TP.scanAreas() end)
+        local an = {}
+        for _, a in ipairs(TP.areas) do table.insert(an, a.name) end
+        local ai = W.pick("area", "Area", an)
+        local area = TP.areas[ai]
+        W.buttons({
+            { "Travel", function() if area then TP.go(area.name, area.pos, nil, "travel") end end },
+            { "Instant", function() if area then TP.go(area.name, area.pos, nil, "instant") end end },
+        })
+        W.section("Saved spots")
+        W.input("dw_spotname", "Spot name", "")
+        W.button("Save spot here", function() TP.saveSpot(store("dw_spotname", "")) end)
+        local sn = {}
+        for _, s in ipairs(TP.spots) do table.insert(sn, s.name) end
+        local si = W.pick("spot", "Spot", sn)
+        local spot = TP.spots[si]
+        W.buttons({
+            { "Travel", function() if spot then TP.go(spot.name, spot.pos, nil, "travel") end end },
+            { "Instant", function() if spot then TP.go(spot.name, spot.pos, nil, "instant") end end },
+            { "Delete", function() if spot then TP.deleteSpot(spot.name) end end },
+        })
+    end)
+
+    page("TALENTS", function()
+        W.section("Tracker")
+        W.toggle("dw_talenttrack", "Talent tracker", false)
+        W.toggle("dw_talentnotify", "Notify when build cards show up", true)
+        W.toggle("dw_talentcards", "Mark cards GET / SKIP", true)
+        W.toggle("dw_talentpanel", "Show need / get rid of list", true)
+        W.slider("dw_cardyoff", "Card box Y offset", 0, 80, 36)
+        W.key("dw_talhlkey", "Highlight cards key")
+        W.button("Highlight cards now", function() if TT.highlight then TT.highlight() end end, true)
+        W.section("Build")
+        W.label(TT.buildName(), C.cyan)
+        W.label(TT.progress())
+        W.input("dw_buildlink", "Builder link", "https://deepwoken.co/builder?id=kWkA0YWx")
+        W.buttons({
+            { "Load from link", function() TT.loadFromLink(store("dw_buildlink", "")) end },
+            { "Reload dw_build.txt", function() TT.reload() end },
+        })
+        W.input("dw_talentignore", "Never flag these (comma separated)", "")
+        W.buttons({
+            { "Dump card GUI", function() TT.dump() end },
+            { "Reset to built-in", function() TT.resetBuild() end },
+        })
+        W.label(TT.status())
+    end)
+
+    page("WORLD", function()
+        W.section("Lighting (memory)")
+        W.toggle("dw_mfullbright", "Fullbright", false)
+        W.slider("dw_mfbbright", "Brightness", 1, 10, 3)
+        W.slider("dw_mfbexpo", "Exposure (x0.5)", 0, 6, 1)
+        W.slider("dw_mfbambient", "Ambient light", 10, 100, 70, 1, "%")
+        W.toggle("dw_mnofog", "No fog", false)
+        W.label("Status: " .. tostring(MEM.fb), C.cyan)
+        W.buttons({
+            { "Rescan offsets", function() MEM.resetScan() end },
+            { "Memory debug", function() MEM.dump() end },
+        })
+        W.section("Rice")
+        W.label("Rice: " .. tostring(RICE.state), C.cyan)
+        W.label("Rice's own tab has Remove Kill Bricks etc.")
+        W.buttons({
+            { "Load Rice now", function() RICE.load() end },
+            { "Load on execute", function()
+                pcall(function() delfile("dw_norice.txt") end); RICE.state = "On next execute"
+            end },
+            { "Don't load", function()
+                pcall(function() writefile("dw_norice.txt", "delete this file to load Rice again") end)
+                RICE.state = "Off next execute"
+            end },
+        })
+    end)
+
+    page("CONFIG", function()
+        W.section("Configs")
+        W.input("dw_cfgname", "Config name", "")
+        W.buttons({
+            { "Save", function() saveConfig(store("dw_cfgname", "")) end, true },
+            { "Load by name", function() loadConfig(store("dw_cfgname", ""), false) end },
+        })
+        local ci = W.pick("cfg", "Saved", configNames)
+        local picked = configNames[ci]
+        W.buttons({
+            { "Load", function() if picked then loadConfig(picked, false) end end },
+            { "Overwrite", function() if picked then saveConfig(picked) end end },
+            { "Delete", function() if picked then deleteConfig(picked) end end },
+        })
+        W.buttons({
+            { "Load on execute", function() if picked then setAutoload(picked) end end },
+            { "Autoload off", function() setAutoload("") end },
+            { "Refresh", function() refreshConfigList() end },
+        })
+        W.label(tostring(configStatus), C.cyan)
+        W.label("Saving also makes that config load next time you execute")
+        W.section("Menu")
+        W.key("dw_menukey", "Hide / show menu key", "END")
+        W.button("RESET EVERYTHING TO DEFAULT", function()
+            for k in pairs(PENDING) do PENDING[k] = nil end
+            pcall(readSettings)
+            pcall(function() notify("All settings back to default (saved configs untouched)", "Reset", 4) end)
+        end)
+    end)
+
+    -- ---- the window ----
+
+    function GUI.frame()
+        if KB.pressed("dw_menukey", V("dw_menukey", "END")) then GUI.open = not GUI.open end
+        if not GUI.open then
+            if GUI.focus then commit() end
+            finish()
+            return
+        end
+        readInput()
+        if GUI.focus then typeKeys() end
+        -- a click anywhere other than the box you're typing in finishes typing
+        if click and GUI.focus and GUI.focusRect then
+            local r = GUI.focusRect
+            if not over(r[1], r[2], r[3], r[4]) then commit() end
+        end
+        GUI.focusRect = nil
+
+        local x, y, w, h = GUI.x, GUI.y, GUI.w, GUI.h
+        box(x, y, w, h, C.bg, true, 0.96, 55)
+        box(x, y, w, h, C.line, false, 1, 56)
+
+        -- header
+        box(x, y, w, 42, C.side, true, 1, 57)
+        box(x, y, 210, 42, C.yellow, true, 1, 58)
+        text(x + 16, y + 12, "DEMOLISHER //DW", C.black, 16)
+        local who = "?"
+        pcall(function() who = string.upper(LocalPlayer.Name) end)
+        text(x + 226, y + 14, "NET_LINK::" .. who .. "  //  SYS_OK", C.dim, 12)
+        local hk = tostring(V("dw_menukey", "END"))
+        local hideW = 110
+        local hx = x + w - hideW - 10
+        local hovHide = over(hx, y + 9, hideW, 24)
+        box(hx, y + 9, hideW, 24, hovHide and C.pink or C.panel, true, 1, 58)
+        text(hx + hideW / 2, y + 14, "HIDE [" .. hk .. "]", hovHide and C.black or C.text, 12, true)
+        if click and hovHide then click = false; GUI.open = false end
+        if click and over(x + 210, y, w - 210 - hideW - 20, 42) then
+            click = false
+            dragWin = { mx - x, my - y }
+        end
+        if dragWin then
+            if down then GUI.x, GUI.y = mx - dragWin[1], my - dragWin[2] else dragWin = nil end
+        end
+
+        -- sidebar
+        box(x, y + 42, 210, h - 42, C.side, true, 1, 57)
+        text(x + 18, y + 60, who, C.text, 15)
+        text(x + 18, y + 80, "EDGERUNNER // DEEPWOKEN", C.cyan, 11)
+        for i, pg in ipairs(PAGES) do
+            local iy = y + 112 + (i - 1) * 34
+            local active = GUI.page == i
+            local hov = over(x + 12, iy, 186, 28)
+            if active then box(x + 12, iy, 186, 28, C.yellow, true, 1, 58) end
+            text(x + 24, iy + 7, string.format("%02d", i), active and C.black or C.dim, 13)
+            text(x + 60, iy + 7, pg.name, active and C.black or (hov and C.cyan or C.text), 13)
+            if click and hov then click = false; GUI.page = i end
+        end
+        text(x + 18, y + h - 52, "// PROFILE", C.dim, 11)
+        text(x + 18, y + h - 34, string.sub(tostring(configStatus), 1, 24), C.cyan, 11)
+
+        -- content
+        local pg = PAGES[GUI.page] or PAGES[1]
+        local cx, cw = x + 234, w - 234 - 38
+        text(cx, y + 56, string.format("%02d // %s", GUI.page, pg.name), C.pink, 12)
+        text(cx, y + 72, pg.name, C.text, 26)
+        text(cx + #pg.name * 15.5 + 4, y + 72, "_", C.yellow, 26)
+        L.x, L.w, L.top, L.bottom = cx, cw, y + 114, y + h - 12
+        local sc = GUI.scroll[GUI.page] or 0
+        L.y = L.top - sc
+        local ok, err = pcall(pg.fn)
+        if not ok then
+            text(cx, L.top, "page error: " .. tostring(err), C.pink, 12)
+            report("menu " .. pg.name, err)
+        end
+        local contentH = (L.y + sc) - L.top
+        local viewH = L.bottom - L.top
+
+        -- scrollbar
+        if contentH > viewH then
+            local bx = x + w - 22
+            box(bx, L.top, 6, viewH, C.track, true, 1, 58)
+            local thumbH = math.max(viewH * viewH / contentH, 30)
+            local maxSc = contentH - viewH
+            local ty = L.top + (viewH - thumbH) * (sc / maxSc)
+            box(bx - 2, ty, 10, thumbH, dragBar and C.yellow or C.cyan, true, 1, 59)
+            if click and over(bx - 8, L.top, 22, viewH) then click = false; dragBar = { my, sc } end
+            if dragBar then
+                if down then
+                    local nsc = dragBar[2] + (my - dragBar[1]) * (contentH / viewH)
+                    GUI.scroll[GUI.page] = clamp(nsc, 0, maxSc)
+                else
+                    dragBar = nil
+                end
+            end
+        else
+            GUI.scroll[GUI.page] = 0
+        end
+
+        finish()
+    end
+
+    task.spawn(function()
+        while true do
+            local ok, err = pcall(GUI.frame)
+            if not ok then report("menu", err) end
+            task.wait()
+        end
+    end)
+end
+
+-- Matcha's own tab now just opens/hides the custom menu
+UI.AddTab("Deepwoken Script", function(tab)
+    logStep("8 UI first frame start", true)
+    local s = tab:Section("Deepwoken Script", "Left")
+    s:Text("Everything is in the DEMOLISHER //DW window.")
+    s:Button(GUI.open and "Hide the menu" or "Show the menu", function() GUI.open = not GUI.open end)
+    s:Text("Hide / show key: " .. tostring(V("dw_menukey", "END")))
+    s:Text("Drag it by the header.")
 end)
 
 logStep("9 script fully loaded")
