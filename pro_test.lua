@@ -158,6 +158,34 @@ for _, n in ipairs({ "hookfunction", "hookmetamethod", "getrawmetatable", "setre
 end
 try("VirtualInputManager", function() return tostring(game:GetService("VirtualInputManager")) end)
 
+line("")
+line("== 7. HYBRID: hooking (tested on a dummy function only) ==")
+for _, n in ipairs({ "getnamecallmethod", "checkcaller", "cloneref", "hookfunction", "hookmetamethod",
+    "getrawmetatable", "replaceclosure", "detour_function", "getcallingscript", "islclosure" }) do
+    line(string.format("%-34s %s", n, has(n)))
+end
+try("hookfunction on a test function", function()
+    local function original() return "original" end
+    local old = hookfunction(original, function() return "hooked" end)
+    local got = original()
+    if old then hookfunction(original, old) end
+    return "call returned " .. tostring(got)
+end)
+try("game __namecall metamethod", function()
+    local mt = getrawmetatable(game)
+    return "type " .. type(mt.__namecall)
+end)
+try("Humanoid.AnimationPlayed event", function()
+    local c = hum.AnimationPlayed:Connect(function() end)
+    c:Disconnect()
+    return "can connect"
+end)
+try("FallDamage remote exists", function()
+    local r = game:GetService("ReplicatedStorage"):FindFirstChild("Requests")
+    local f = r and r:FindFirstChild("FallDamage")
+    return f and (f.ClassName .. " (not fired)") or "not found by that name"
+end)
+
 pcall(function() writefile("dw_protest.txt", table.concat(out, "\n")) end)
 pcall(function() notify("Wrote dw_protest.txt - send it over", "DW capability test", 8) end)
 line("done - send dw_protest.txt")
